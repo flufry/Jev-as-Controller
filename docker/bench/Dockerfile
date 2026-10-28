@@ -42,9 +42,26 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # temporary wheel directory for this step; keep earlier dependency layers cached.
 RUN python -m pip install --no-cache-dir --index-url "$PYPI_INDEX_URL" --no-build-isolation \
       -c /opt/jev-build/constraints.txt flash-attn==2.8.3.post2
+# PyPI mirrors do not cover the GitHub release download in causal-conv1d's setup.py.
+# Prefer a matching local wheel, then an explicit trusted wheel URL, then upstream.
+ARG CAUSAL_CONV1D_WHEEL_URL=""
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    python -m pip install --index-url "$PYPI_INDEX_URL" --no-build-isolation \
-      -c /opt/jev-build/constraints.txt causal-conv1d==1.7.0
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
+    wheel_name="$(python -c 'import sys, sysconfig, torch; py="cp%d%d" % sys.version_info[:2]; tv=".".join(torch.__version__.split(".")[:2]); cu=torch.version.cuda.split(".")[0]; abi=str(torch._C._GLIBCXX_USE_CXX11_ABI).upper(); platform=sysconfig.get_platform().replace("-", "_"); print(f"causal_conv1d-1.7.0+cu{cu}torch{tv}cxx11abi{abi}-{py}-{py}-{platform}.whl")')" \
+    && if [[ -f "/opt/jev-wheels/$wheel_name" ]]; then \
+      echo "Installing local wheel: $wheel_name"; \
+      python -m pip install --no-index --no-deps "/opt/jev-wheels/$wheel_name"; \
+    elif [[ -n "$CAUSAL_CONV1D_WHEEL_URL" ]]; then \
+      curl --fail --location --retry 5 --connect-timeout 30 --max-time 1800 \
+        --output "/tmp/$wheel_name" "$CAUSAL_CONV1D_WHEEL_URL" \
+      && python -m pip install --no-index --no-deps "/tmp/$wheel_name" \
+      && rm "/tmp/$wheel_name"; \
+    else \
+      echo "No matching local wheel ($wheel_name); using upstream installer (may download from GitHub)."; \
+      python -m pip install -v --index-url "$PYPI_INDEX_URL" --no-build-isolation \
+        -c /opt/jev-build/constraints.txt causal-conv1d==1.7.0; \
+    fi \
+    && python -c 'from importlib.metadata import version; from packaging.version import Version; assert Version(version("causal-conv1d")).base_version == "1.7.0"'
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install --index-url "$PYPI_INDEX_URL" \
       -c /opt/jev-build/constraints.txt pyarrow
