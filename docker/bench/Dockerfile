@@ -37,8 +37,10 @@ COPY docker/bench/constraints.txt /opt/jev-build/constraints.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install --index-url "$PYPI_INDEX_URL" \
       -c /opt/jev-build/constraints.txt -r /opt/jev-build/requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    python -m pip install --index-url "$PYPI_INDEX_URL" --no-build-isolation \
+# flash-attn 2.8.3.post2 uses os.rename() for its downloaded wheel. A pip cache
+# mount puts the wheel output on another filesystem and causes EXDEV. Use pip's
+# temporary wheel directory for this step; keep earlier dependency layers cached.
+RUN python -m pip install --no-cache-dir --index-url "$PYPI_INDEX_URL" --no-build-isolation \
       -c /opt/jev-build/constraints.txt flash-attn==2.8.3.post2
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install --index-url "$PYPI_INDEX_URL" --no-build-isolation \
