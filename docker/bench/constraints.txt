@@ -1,0 +1,5 @@
+torch==2.8.0
+torchvision==0.23.0
+triton==3.4.0
+numpy==1.26.4
+accelerate==1.15.0

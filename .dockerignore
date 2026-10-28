@@ -1,0 +1,8 @@
+# Only dependency manifests are required to build the screening environment.
+# Repository code, data, weights and run outputs are mounted at container runtime.
+**
+!requirements.txt
+!requirements-overlay.txt
+!docker/
+!docker/bench/
+!docker/bench/**

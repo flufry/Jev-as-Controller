@@ -1,0 +1,396 @@
+{
+  "schema": "jev_as_controller_public_results_v1",
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "accuracy_unit": "fraction",
+  "sample_variance_ddof": 1,
+  "display_variance_unit": "percentage_points_squared",
+  "random_choice_repeats_per_seed": 50,
+  "model_checkpoints": {
+    "pi0": {
+      "repo_id": "Qwen/Qwen3.6-35B-A3B",
+      "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+    },
+    "Fs": {
+      "repo_id": "ZhuYuhan/VideoJev-4B",
+      "revision": "1c1a253bf90dfa66176124d25a48ffb791d517d5"
+    }
+  },
+  "protocol": {
+    "baseline": {
+      "fps": 4,
+      "max_frames": 4096
+    },
+    "controller_sources": {
+      "fps": 2,
+      "max_frames": 2048
+    },
+    "context": 262144,
+    "visual_token_budget": 24576,
+    "beta": 2,
+    "subtitles": false,
+    "audio": false,
+    "qwen_dtype": "bfloat16",
+    "quantized": false
+  },
+  "experiments": {
+    "proportional_100": {
+      "questions_per_seed": 100,
+      "duration_group_quota": {
+        "15": 14,
+        "60": 13,
+        "600": 31,
+        "3600": 42
+      },
+      "total_question_occurrences": 300,
+      "unique_questions": 283,
+      "unique_videos": 251,
+      "methods": {
+        "qwen36": {
+          "seed_accuracy": {
+            "42": 0.67,
+            "43": 0.69,
+            "44": 0.71
+          },
+          "mean_accuracy": 0.69,
+          "sample_variance_fraction_squared": 0.0003999999999999985,
+          "sample_variance_percentage_points_squared": 3.999999999999985
+        },
+        "videojev": {
+          "seed_accuracy": {
+            "42": 0.64,
+            "43": 0.68,
+            "44": 0.68
+          },
+          "mean_accuracy": 0.6666666666666667,
+          "sample_variance_fraction_squared": 0.0005333333333333343,
+          "sample_variance_percentage_points_squared": 5.333333333333344
+        },
+        "random_choice": {
+          "seed_accuracy": {
+            "42": 0.6546000000000001,
+            "43": 0.682,
+            "44": 0.6938
+          },
+          "mean_accuracy": 0.6768000000000001,
+          "sample_variance_fraction_squared": 0.0004044399999999982,
+          "sample_variance_percentage_points_squared": 4.044399999999982
+        },
+        "jev_as_controller": {
+          "seed_accuracy": {
+            "42": 0.67,
+            "43": 0.73,
+            "44": 0.78
+          },
+          "mean_accuracy": 0.7266666666666667,
+          "sample_variance_fraction_squared": 0.0030333333333333323,
+          "sample_variance_percentage_points_squared": 30.33333333333332
+        },
+        "oracle_or": {
+          "seed_accuracy": {
+            "42": 0.74,
+            "43": 0.78,
+            "44": 0.8
+          },
+          "mean_accuracy": 0.7733333333333333,
+          "sample_variance_fraction_squared": 0.000933333333333335,
+          "sample_variance_percentage_points_squared": 9.33333333333335
+        }
+      },
+      "same_protocol_controller_minus_qwen2": {
+        "values": [
+          0.010000000000000009,
+          0.05999999999999994,
+          0.010000000000000009
+        ],
+        "mean": 0.026666666666666655,
+        "sample_variance": 0.0008333333333333311,
+        "population_variance": 0.000555555555555554,
+        "sample_std": 0.02886751345948125,
+        "population_std": 0.023570226039551553
+      },
+      "source": {
+        "path": "runs/lvb100_proportional_seed42_43_44/summary/results.json",
+        "sha256": "dc044e86030c433083691c6b45e4f7fd689879e29451be7bfc965d353e757159",
+        "artifact_manifest_sha256": "3e9898159cdf2a6cc88e780465099821d61f28406f92f6e82ef7ceee962195ed",
+        "finalization_sha256": "fb1adfd80fef8f1a625626412fa426684f73970fda58e6de5d3ad4d78fceee41",
+        "finalization_mode": "independent_verified_outputs",
+        "original_outer_wrapper_exit": "unknown"
+      }
+    },
+    "equal_duration_300": {
+      "questions_per_seed": 300,
+      "duration_group_quota": {
+        "15": 75,
+        "60": 75,
+        "600": 75,
+        "3600": 75
+      },
+      "total_question_occurrences": 900,
+      "unique_questions": 671,
+      "unique_videos": 570,
+      "methods": {
+        "qwen36": {
+          "seed_accuracy": {
+            "42": 0.7333333333333333,
+            "43": 0.7333333333333333,
+            "44": 0.7333333333333333
+          },
+          "mean_accuracy": 0.7333333333333333,
+          "sample_variance_fraction_squared": 0.0,
+          "sample_variance_percentage_points_squared": 0.0
+        },
+        "videojev": {
+          "seed_accuracy": {
+            "42": 0.7133333333333333,
+            "43": 0.72,
+            "44": 0.72
+          },
+          "mean_accuracy": 0.7177777777777777,
+          "sample_variance_fraction_squared": 1.4814814814815006e-05,
+          "sample_variance_percentage_points_squared": 0.14814814814815006
+        },
+        "random_choice": {
+          "seed_accuracy": {
+            "42": 0.7216,
+            "43": 0.7245333333333334,
+            "44": 0.7259333333333333
+          },
+          "mean_accuracy": 0.7240222222222222,
+          "sample_variance_fraction_squared": 4.890370370370312e-06,
+          "sample_variance_percentage_points_squared": 0.04890370370370312
+        },
+        "jev_as_controller": {
+          "seed_accuracy": {
+            "42": 0.7466666666666667,
+            "43": 0.7566666666666666,
+            "44": 0.75
+          },
+          "mean_accuracy": 0.7511111111111111,
+          "sample_variance_fraction_squared": 2.5925925925925396e-05,
+          "sample_variance_percentage_points_squared": 0.25925925925925397
+        },
+        "oracle_or": {
+          "seed_accuracy": {
+            "42": 0.8133333333333334,
+            "43": 0.8166666666666667,
+            "44": 0.8099999999999999
+          },
+          "mean_accuracy": 0.8133333333333334,
+          "sample_variance_fraction_squared": 1.1111111111111254e-05,
+          "sample_variance_percentage_points_squared": 0.11111111111111253
+        }
+      },
+      "source": {
+        "path": "runs/lvb100_expanded3groups_seed42_43_44/summary/results.json",
+        "sha256": "8b4396c23644d7b02b14c30f7bb61483c6a9c19f5211de0c282d93ef9741d4af",
+        "artifact_manifest_sha256": "d76e0c3a27d625ebe47e893db5dcc313ad78f736e50e3abeca43992fa2009ee0"
+      }
+    },
+    "equal_duration_group1_100": {
+      "questions_per_seed": 100,
+      "duration_group_quota": {
+        "15": 25,
+        "60": 25,
+        "600": 25,
+        "3600": 25
+      },
+      "methods": {
+        "qwen36": {
+          "seed_accuracy": {
+            "42": 0.74,
+            "43": 0.78,
+            "44": 0.73
+          },
+          "mean_accuracy": 0.75,
+          "sample_variance_fraction_squared": 0.0007000000000000013,
+          "sample_variance_percentage_points_squared": 7.000000000000013
+        },
+        "videojev": {
+          "seed_accuracy": {
+            "42": 0.75,
+            "43": 0.78,
+            "44": 0.71
+          },
+          "mean_accuracy": 0.7466666666666667,
+          "sample_variance_fraction_squared": 0.0012333333333333356,
+          "sample_variance_percentage_points_squared": 12.333333333333357
+        },
+        "random_choice": {
+          "seed_accuracy": {
+            "42": 0.7438,
+            "43": 0.7794,
+            "44": 0.7182
+          },
+          "mean_accuracy": 0.7471333333333333,
+          "sample_variance_fraction_squared": 0.0009446933333333342,
+          "sample_variance_percentage_points_squared": 9.446933333333341
+        },
+        "jev_as_controller": {
+          "seed_accuracy": {
+            "42": 0.74,
+            "43": 0.82,
+            "44": 0.76
+          },
+          "mean_accuracy": 0.7733333333333333,
+          "sample_variance_fraction_squared": 0.0017333333333333313,
+          "sample_variance_percentage_points_squared": 17.333333333333314
+        },
+        "oracle_or": {
+          "seed_accuracy": {
+            "42": 0.82,
+            "43": 0.86,
+            "44": 0.84
+          },
+          "mean_accuracy": 0.84,
+          "sample_variance_fraction_squared": 0.0004000000000000007,
+          "sample_variance_percentage_points_squared": 4.000000000000007
+        }
+      },
+      "source": {
+        "path": "runs/lvb100_expanded3groups_seed42_43_44/group1_summary/results.json",
+        "sha256": "27d6d1e4792c3f846b755d192b720ab84ea7e95b8ecddbf6b4bfaecd17afe22e"
+      }
+    },
+    "equal_duration_group2_100": {
+      "questions_per_seed": 100,
+      "duration_group_quota": {
+        "15": 25,
+        "60": 25,
+        "600": 25,
+        "3600": 25
+      },
+      "methods": {
+        "qwen36": {
+          "seed_accuracy": {
+            "42": 0.73,
+            "43": 0.69,
+            "44": 0.71
+          },
+          "mean_accuracy": 0.71,
+          "sample_variance_fraction_squared": 0.0004000000000000007,
+          "sample_variance_percentage_points_squared": 4.000000000000007
+        },
+        "videojev": {
+          "seed_accuracy": {
+            "42": 0.69,
+            "43": 0.67,
+            "44": 0.72
+          },
+          "mean_accuracy": 0.6933333333333334,
+          "sample_variance_fraction_squared": 0.0006333333333333319,
+          "sample_variance_percentage_points_squared": 6.333333333333319
+        },
+        "random_choice": {
+          "seed_accuracy": {
+            "42": 0.7066,
+            "43": 0.6788,
+            "44": 0.713
+          },
+          "mean_accuracy": 0.6994666666666667,
+          "sample_variance_fraction_squared": 0.0003305733333333338,
+          "sample_variance_percentage_points_squared": 3.305733333333338
+        },
+        "jev_as_controller": {
+          "seed_accuracy": {
+            "42": 0.75,
+            "43": 0.75,
+            "44": 0.76
+          },
+          "mean_accuracy": 0.7533333333333333,
+          "sample_variance_fraction_squared": 3.3333333333333396e-05,
+          "sample_variance_percentage_points_squared": 0.333333333333334
+        },
+        "oracle_or": {
+          "seed_accuracy": {
+            "42": 0.79,
+            "43": 0.75,
+            "44": 0.77
+          },
+          "mean_accuracy": 0.77,
+          "sample_variance_fraction_squared": 0.0004000000000000007,
+          "sample_variance_percentage_points_squared": 4.000000000000007
+        }
+      },
+      "source": {
+        "path": "runs/lvb100_expanded3groups_seed42_43_44/group2_summary/results.json",
+        "sha256": "c00e4cb486669c6aa1f412a78dc98d32e1e4dbb7e0012497145758be900b4e62"
+      }
+    },
+    "equal_duration_group3_100": {
+      "questions_per_seed": 100,
+      "duration_group_quota": {
+        "15": 25,
+        "60": 25,
+        "600": 25,
+        "3600": 25
+      },
+      "methods": {
+        "qwen36": {
+          "seed_accuracy": {
+            "42": 0.73,
+            "43": 0.73,
+            "44": 0.76
+          },
+          "mean_accuracy": 0.74,
+          "sample_variance_fraction_squared": 0.0003000000000000005,
+          "sample_variance_percentage_points_squared": 3.0000000000000053
+        },
+        "videojev": {
+          "seed_accuracy": {
+            "42": 0.7,
+            "43": 0.71,
+            "44": 0.73
+          },
+          "mean_accuracy": 0.7133333333333333,
+          "sample_variance_fraction_squared": 0.00023333333333333374,
+          "sample_variance_percentage_points_squared": 2.3333333333333375
+        },
+        "random_choice": {
+          "seed_accuracy": {
+            "42": 0.7144,
+            "43": 0.7154,
+            "44": 0.7466
+          },
+          "mean_accuracy": 0.7254666666666667,
+          "sample_variance_fraction_squared": 0.00033521333333333343,
+          "sample_variance_percentage_points_squared": 3.3521333333333345
+        },
+        "jev_as_controller": {
+          "seed_accuracy": {
+            "42": 0.75,
+            "43": 0.7,
+            "44": 0.73
+          },
+          "mean_accuracy": 0.7266666666666667,
+          "sample_variance_fraction_squared": 0.0006333333333333345,
+          "sample_variance_percentage_points_squared": 6.333333333333345
+        },
+        "oracle_or": {
+          "seed_accuracy": {
+            "42": 0.83,
+            "43": 0.84,
+            "44": 0.82
+          },
+          "mean_accuracy": 0.83,
+          "sample_variance_fraction_squared": 0.00010000000000000018,
+          "sample_variance_percentage_points_squared": 1.0000000000000018
+        }
+      },
+      "source": {
+        "path": "runs/lvb100_expanded3groups_seed42_43_44/group3_summary/results.json",
+        "sha256": "5de7f4610b76dd5d3abf792d7716f63505d340ffd04a4b05b73fed3166595e19"
+      }
+    }
+  },
+  "training_overlap_verified": false,
+  "limitations": [
+    "验证集问题分层抽样，不是完整官方评测；每个seed可以有重复视频，跨seed问题可以重叠。",
+    "两基线与Controller源的FPS/帧数不同，固定视觉token预算不等于严格计算量对齐。",
+    "OR使用真实标签，仅是上界；随机选边不读取标签决定选边。",
+    "三次抽样不足以据此宣称统计显著性；无法确认训练与验证集无重叠。"
+  ]
+}

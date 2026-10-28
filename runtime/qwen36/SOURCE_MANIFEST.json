@@ -1,0 +1,55 @@
+{
+  "schema": "jev_controller_qwen36_runtime_sources_v1",
+  "copied_without_changes": true,
+  "grouped_gemm_revision": "172fada89fa7364fe5d026b3a0dfab58b591ffdd",
+  "cutlass_revision": "8783c41851cd3582490e04e69e0cd756a8c1db7f",
+  "xtuner_revision": "76e705134521eff867b409f3b3451df1c4d8dd36",
+  "target": "Python3.12 / torch2.8.0+cu128 / CUDA12.8 / SM89",
+  "expected_patched_source_sha256": {
+    "csrc/grouped_gemm.cu": "f33b1ea884835f991f94e31e6da93b2eb795e4beda6375a75d6ab87b74a58b8b",
+    "csrc/ops.cu": "9db1e37241541b26847396141cb250d70784840be37538acc94dee8b8e01cb5b"
+  },
+  "files": {
+    "grouped_gemm/__init__.py": {
+      "source": ".deps-qwen36/grouped_gemm/__init__.py",
+      "bytes": 52,
+      "sha256": "f0470bd2b5ca074500d35d610f02588097c83e478ec33662b3550abc6be8ecf2"
+    },
+    "grouped_gemm/backend.py": {
+      "source": ".deps-qwen36/grouped_gemm/backend.py",
+      "bytes": 1683,
+      "sha256": "81870592a634f7c2c6e4adcbcbea56e6a9ca5aeb591db64c163afa8bc8037c62"
+    },
+    "grouped_gemm/ops.py": {
+      "source": ".deps-qwen36/grouped_gemm/ops.py",
+      "bytes": 8783,
+      "sha256": "02f5f9113c9a67f34db275eb772b3b99ae6ee568cd1ce8835d36250dcdc6f83e"
+    },
+    "prepare_cutlass.py": {
+      "source": "reports/setup-qwen36-runtime/prepare_cutlass.py",
+      "bytes": 3781,
+      "sha256": "cda792ed7f0b6c5c5a109292490b1df5e73d2ed20d52368826a78157477f7703"
+    },
+    "grouped-gemm-v1.1.4-setup.py": {
+      "source": "reports/setup-qwen36-runtime/grouped-gemm-v1.1.4-setup.py",
+      "bytes": 2415,
+      "sha256": "a3269af5454631d049f8414e24f0ab99945e2820fe4e259ee70b256eec303e6f"
+    },
+    "sm89-cutlass.patch": {
+      "source": "reports/setup-qwen36-runtime/sm89-cutlass.patch",
+      "bytes": 4965,
+      "sha256": "89e56ced5b5b0d7b272dc850ec7aaa86c3c243343745e6e018dc6d250959dd7a"
+    },
+    "LICENSE.grouped_gemm": {
+      "source": ".deps-qwen36/src/grouped_gemm/LICENSE",
+      "bytes": 22119,
+      "sha256": "0680d21c0260a3a8b04a956d822815d460912215db288702e3578c142a11a5d3"
+    },
+    "LICENSE.cutlass": {
+      "source": ".deps-qwen36/src/grouped_gemm/third_party/cutlass/LICENSE.txt",
+      "bytes": 1547,
+      "sha256": "5f0ea053230eb92267e9e80ed67ec08899ebc55d093eff4a2273a7b340a48cca"
+    }
+  },
+  "validation_scope": "发布时核对本地已使用源码的字节与SHA，并在临时本地Git checkout重放prepare脚本，补丁及两CUDA源SHA一致；未联网下载、编译扩展、GPU数学验证或模型运行。"
+}

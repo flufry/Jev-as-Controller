@@ -1,0 +1,3 @@
+# Preserve the exact upstream/vendor bytes used by the verified native backend.
+runtime/qwen36/grouped_gemm/ops.py whitespace=-blank-at-eol,-space-before-tab
+runtime/qwen36/sm89-cutlass.patch whitespace=-blank-at-eol,-space-before-tab
