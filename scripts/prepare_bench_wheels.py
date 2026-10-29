@@ -95,7 +95,12 @@ def sha256(path: Path) -> str:
 
 
 def main() -> None:
+    global WHEELS
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wheel-dir", type=Path, default=WHEELS,
+                        help="Wheel output directory (default: checkout docker/bench/wheels)")
+    parser.add_argument("--work-dir", type=Path, default=ROOT / ".venv-bench-wheels",
+                        help="Preparation virtual environment directory")
     parser.add_argument("--index-url", default="https://pypi.org/simple")
     parser.add_argument("--torch-index-url", default="https://download.pytorch.org/whl/cu128")
     parser.add_argument("--flash-attn-wheel-url")
@@ -108,8 +113,9 @@ def main() -> None:
         parser.error("The preparation environment needs glibc >= 2.35 (e.g. Ubuntu 22.04/24.04).")
     if not shutil.which("curl"):
         parser.error("curl is required")
+    WHEELS = args.wheel_dir.resolve()
     WHEELS.mkdir(parents=True, exist_ok=True)
-    work = ROOT / ".venv-bench-wheels"
+    work = args.work_dir.resolve()
     if not (work / "bin/python").exists():
         venv.EnvBuilder(with_pip=True).create(work)
     python = str(work / "bin/python")

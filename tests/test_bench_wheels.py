@@ -25,6 +25,28 @@ def wheel(directory, name, version, tag="py3-none-any", dependencies=(), metadat
 
 
 class WheelhouseTests(unittest.TestCase):
+    def test_external_work_and_wheels_keep_checkout_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            checkout = base / "unwritable-checkout"
+            output, work = base / "output", base / "cache/venv"
+            class Started(Exception):
+                pass
+            with patch.object(prepare, "ROOT", checkout), patch.object(prepare, "WHEELS", checkout / "wheels"), \
+                    patch.object(sys, "argv", ["prepare", "--wheel-dir", str(output), "--work-dir", str(work)]), \
+                    patch.object(sys, "platform", "linux"), patch.object(sys, "version_info", (3, 12, 12)), \
+                    patch.object(prepare.platform, "machine", return_value="x86_64"), \
+                    patch.object(prepare.platform, "libc_ver", return_value=("glibc", "2.35")), \
+                    patch.object(prepare.shutil, "which", return_value="/usr/bin/curl"), \
+                    patch.object(prepare.venv, "EnvBuilder") as builder, \
+                    patch.object(prepare, "run", side_effect=Started):
+                with self.assertRaises(Started):
+                    prepare.main()
+                builder.return_value.create.assert_called_once_with(work.resolve())
+                self.assertEqual(output.resolve(), prepare.WHEELS)
+            self.assertTrue(output.is_dir())
+            self.assertFalse(checkout.exists())
+
     def test_lock_preserves_post_and_cuda_versions(self):
         report = {"install": [{"metadata": {"name": "flash-attn", "version": "2.8.3.post2"}},
                               {"metadata": {"name": "torch", "version": "2.8.0+cu128"}}]}

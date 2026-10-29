@@ -40,9 +40,8 @@ done
 docker run --rm --network host --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   --mount "type=bind,source=$repo_root,target=/workspace/Jev-as-Controller,readonly" \
-  --mount "type=bind,source=$repo_root/docker/bench/wheels,target=/workspace/Jev-as-Controller/docker/bench/wheels" \
+  --mount "type=bind,source=$repo_root/docker/bench/wheels,target=/opt/jev-wheels" \
   --mount "type=bind,source=$cache_root,target=/cache" \
-  --mount "type=bind,source=$cache_root/venv,target=/workspace/Jev-as-Controller/.venv-bench-wheels" \
   --workdir /workspace/Jev-as-Controller \
   --env HOME=/cache/home --env TMPDIR=/cache/tmp --env PIP_CACHE_DIR=/cache/pip \
   --env PIP_CONFIG_FILE=/dev/null --env PIP_NO_INDEX=0 --env PIP_CONSTRAINT= \
@@ -63,5 +62,6 @@ docker run --rm --network host --platform linux/amd64 \
     /cache/bootstrap/bin/uv python install 3.12.12
     bench_python="$(/cache/bootstrap/bin/uv python find 3.12.12)"
     exec "$bench_python" scripts/prepare_bench_wheels.py \
+      --wheel-dir /opt/jev-wheels --work-dir /cache/venv \
       --index-url "$JEV_PYPI_INDEX_URL" "$@"
   ' -- "$@"
