@@ -9,10 +9,25 @@ ARG PYPI_INDEX_URL=https://pypi.org/simple
 ARG PIP_NO_INDEX=0
 ARG PIP_FIND_LINKS=/opt/jev-wheels
 ARG PIP_CONSTRAINT=""
+# Optional Ubuntu archive mirror; keep the base image's suites and security source.
+ARG APT_MIRROR=""
+# Bypass proxies for apt only, while later pip/uv/GitHub downloads may still use them.
+ARG APT_NO_PROXY=0
 ENV PIP_DEFAULT_TIMEOUT=120 \
     PIP_RETRIES=8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN if [[ -n "$APT_MIRROR" ]]; then \
+      for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+        [[ -f "$source" ]] || continue; \
+        sed -E -i "s|https?://([[:alnum:]-]+\.)?archive\.ubuntu\.com/ubuntu/?|${APT_MIRROR%/}/|g" "$source"; \
+      done; \
+    fi \
+    && apt_options=(-o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60) \
+    && if [[ "$APT_NO_PROXY" == "1" ]]; then \
+      apt_options+=(-o Acquire::http::Proxy=DIRECT -o Acquire::https::Proxy=DIRECT); \
+    fi \
+    && apt-get "${apt_options[@]}" update \
+    && DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y --no-install-recommends \
       git curl ca-certificates build-essential ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 # The upstream image may use Python 3.11. Keep our 3.12 ABI separate and explicit.
