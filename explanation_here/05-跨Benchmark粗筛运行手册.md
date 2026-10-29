@@ -2,7 +2,7 @@
 
 本文件描述本次新增实现，与原仓库的 LongVideoBench 实验说明分开。以 `04-待办与执行计划.md` 的小样本路线为目标：Video-MME 150 题、MLVU-Dev MCQ 140 题、LVBench 150 题；不追加 LVB 全量实验。原有 `timejev/`、模型评测脚本、融合公式和已发布结果均未修改。
 
-服务器先按 [06-Docker与服务器环境.md](06-Docker与服务器环境.md) 配好容器。本文命令全部在容器内、仓库根目录的 Bash 中执行。
+服务器先按 [06-Docker与服务器环境.md](06-Docker与服务器环境.md) 配好容器。除第 2 节可在宿主机下载外，本文命令在容器内、仓库根目录的 Bash 中执行。
 
 ## 1. 实现与计划的补充
 
@@ -16,34 +16,49 @@
 
 ## 2. 准备官方标注与原视频
 
-权重、数据和实际输出均不入 Git。新增脚本不下载视频，也不替用户更换失效视频；视频不齐时直接报错，避免静默丢题改变分布。
+权重、数据和实际输出均不入 Git。新增下载入口负责整理官方数据，清单/评测脚本不替换失效视频；视频不齐时直接报错，避免静默丢题改变分布。
 
 官方入口：
 
 | Benchmark | 标注/视频来源 | 本实现读取的标注 |
 |---|---|---|
-| Video-MME v1 | [官方仓库](https://github.com/BradyFU/Video-MME)、[HF 数据](https://huggingface.co/datasets/lmms-lab/Video-MME) | HF Parquet，或其逐题 JSON/JSONL 导出；字段 `question_id/videoID/duration/question/options/answer` 等 |
+| Video-MME v1 | [官方仓库](https://github.com/BradyFU/Video-MME)、[HF 数据](https://huggingface.co/datasets/lmms-eval/Video-MME) | HF Parquet，或其逐题 JSON/JSONL 导出；字段 `question_id/videoID/duration/question/options/answer` 等 |
 | MLVU-Dev | [官方仓库](https://github.com/JUNJIE99/MLVU)、[HF：MLVU/MVLU](https://huggingface.co/datasets/MLVU/MVLU) | 原发行版七个任务 JSON，或已合并且有 `official_id` 的 JSON |
 | LVBench | [官方仓库](https://github.com/zai-org/LVBench)、[HF 数据](https://huggingface.co/datasets/zai-org/LVBench) | `video_info.meta.jsonl`，每视频一行，含 `qa` |
 
-下载时固定 revision，记录所用 revision；脚本另外记录标注文件 SHA256。不要把新版 Video-MME-v2、MLVU-Test 当成上表三个库存。可以先在联网环境查询 revision，再下载固定快照，例如：
+具体工具安装、HF 登录、Deno/Node、下载目录及失败重试见 [09-三个Benchmark数据下载.md](09-三个Benchmark数据下载.md)。推荐在下载速度正常的宿主机执行，进入实际 checkout 后准备独立工具环境：
 
 ```bash
-python - <<'PY'
-import json
-from pathlib import Path
-from huggingface_hub import HfApi, snapshot_download
-repo = 'lmms-lab/Video-MME'  # 对其它 bench 分别执行，修改 repo 和目录
-target = Path('data/benchmarks/videomme/download')
-revision = HfApi().dataset_info(repo).sha
-target.mkdir(parents=True, exist_ok=True)
-with (target / 'download_revision.json').open('x', encoding='utf-8') as f:
-    json.dump({'repo': repo, 'revision': revision}, f, indent=2)
-snapshot_download(repo, repo_type='dataset', revision=revision, local_dir=target)
-PY
+cd "$HOME/srv/jev/Jev-as-Controller"
+unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+python3 -m venv .venv-bench-data
+.venv-bench-data/bin/python -m pip install -U huggingface_hub pyarrow 'yt-dlp[default]'
+BENCH_DATA_ROOT="$HOME/srv/jev/data/benchmarks"
+.venv-bench-data/bin/hf auth login
 ```
 
-上述示例下载整个快照，可能很大。可先在 HF 文件页确认布局，用 `allow_patterns` 只取标注；视频压缩包按官方说明下载和解压。需要联网下载时，不要提前设置离线环境变量。代理地址由服务器实际环境决定；容器的 `127.0.0.1` 默认指容器自己。
+先在 [MLVU 数据页](https://huggingface.co/datasets/MLVU/MVLU)取得访问权限，再使用相应账号的 token 登录。只登录 CLI 不能代替访问申请。下载目录与 06 的宿主机 data 挂载对应；如果在容器中执行，应进入 `/workspace/Jev-as-Controller`，用 `python` 建环境，并把 `BENCH_DATA_ROOT` 改为 `/workspace/Jev-as-Controller/data/benchmarks`。
+
+三个 benchmark 的完整下载命令：
+
+```bash
+.venv-bench-data/bin/python scripts/download_bench_data.py \
+  --bench videomme --data-root "$BENCH_DATA_ROOT"
+
+.venv-bench-data/bin/python scripts/download_bench_data.py \
+  --bench mlvu --data-root "$BENCH_DATA_ROOT"
+
+# LVBench 从 YouTube 下载；准备 JS runtime，安装到独立的下载工具目录。
+curl -fsSL https://deno.land/install.sh \
+  | DENO_INSTALL="$PWD/.venv-bench-data/deno" sh
+export PATH="$PWD/.venv-bench-data/deno/bin:$PATH"
+.venv-bench-data/bin/python scripts/download_bench_data.py \
+  --bench lvbench --data-root "$BENCH_DATA_ROOT"
+```
+
+Video-MME 视频 ZIP 约 100 GB，解压另需空间；脚本会导出 `official.json` 并整理 900 个原视频。MLVU 只下载 Dev 的七个 MCQ 任务，保留原任务文件行序，生成 `video-map.json`。LVBench 的 HF 仓库仅含标注；YouTube 网络/登录限制或视频下架可能导致无法补齐，失败 ID 会写入 `missing-videos.json`，不会删题冒充完整数据集。
+
+下载首次固定并记录 HF commit；相同命令重跑会复用记录、缓存与已有文件。可给单个 bench 添加 `--revision <完整commit>`，或先用 `--bench all --annotations-only` 检查三个标注的下载权限与库存。不要把 Video-MME-v2 或 MLVU-Test 当成本次三个库存。联网下载前不要设置离线环境变量，代理使用实际可达的地址。
 
 建议整理为：
 
@@ -56,7 +71,8 @@ data/benchmarks/
     json/1_plotQA.json   # 七个编号任务 JSON；保留文件内容和原始行序
     json/2_needle.json   # 具体编号/文件名以所下载发行版为准
     ...
-    videos/<video字段>   # 可以保留子目录，或通过 --video-map 显式映射
+    download/MLVU/video/1_plotQA/<video字段>
+    video-map.json      # 原 video 字段到实际视频子目录的精确映射
   lvbench/
     video_info.meta.jsonl
     videos/<key>.mp4
@@ -84,7 +100,9 @@ python scripts/build_bench_manifest.py --bench videomme \
   --base data/benchmarks/videomme
 
 python scripts/build_bench_manifest.py --bench mlvu \
-  --base data/benchmarks/mlvu --annotation data/benchmarks/mlvu/json
+  --base data/benchmarks/mlvu --annotation data/benchmarks/mlvu/json \
+  --videos data/benchmarks/mlvu/download/MLVU/video \
+  --video-map data/benchmarks/mlvu/video-map.json
 
 python scripts/build_bench_manifest.py --bench lvbench \
   --base data/benchmarks/lvbench \

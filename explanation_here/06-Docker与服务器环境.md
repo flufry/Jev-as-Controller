@@ -71,14 +71,189 @@ git status --short
 
 ## 4. 构建项目环境镜像
 
+**宿主机下载快、Docker 内 pip 下载慢时，优先使用 [08-Wheel预下载与离线安装.md](08-Wheel预下载与离线安装.md)**：一次收集全部 Python 依赖及传递依赖，再让构建从本地 wheel 目录安装，覆盖 pyarrow、Torch/CUDA 依赖和两个原生扩展。
+
 在**服务器的仓库根目录**运行：
 
 ```bash
-docker build --pull -f docker/bench/Dockerfile -t jev-bench:cu128 .
+docker build --network host --progress=plain --pull \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
 docker image inspect jev-bench:cu128 --format '{{.Id}}'
 ```
+sha256:3b74968dfd5e26e85cf682e67d11e2bd7e4a5ee7b691544a7e238c2d7fed5f47
 
 新增 `.dockerignore` 使用最小依赖文件白名单，避免把视频、权重、Git 历史和历史结果传入 build context。代码在运行时挂载，因此代码变更无需重新构建镜像；依赖变更需要重建。
+
+这里给 **build 阶段**也指定 `--network host`，让 Dockerfile 内的 pip/apt 等 `RUN` 使用构建器的 host 网络。只给后面的 `docker run` 添加 host 网络，不会改变此前构建镜像时的 pip 网络。上述命令面向本机 Linux Docker Engine 默认构建器；远程构建器使用的是构建器所在机器的网络。参数作用见 [Docker build 网络说明](https://docs.docker.com/reference/cli/docker/buildx/build/#network)。
+
+若宿主机已有 HTTP 代理，例如实际监听 `127.0.0.1:7890`，构建时还需显式传代理（端口按实际修改）：
+
+```bash
+docker build --network host --pull -f docker/bench/Dockerfile -t jev-bench:cu128 \
+  --build-arg HTTP_PROXY=http://127.0.0.1:7890 \
+  --build-arg HTTPS_PROXY=http://127.0.0.1:7890 \
+  --build-arg NO_PROXY=localhost,127.0.0.1 .
+```
+
+这是 Docker [预定义的代理构建参数](https://docs.docker.com/build/building/variables/#proxy-arguments)，无需修改 Dockerfile 加入代理 ENV。只有代理确实在该地址运行时才添加。若自定义 BuildKit 报 `network.host is not allowed`，需让 builder 允许 `network.host` entitlement，并在 `docker buildx build` 中传 `--allow network.host --network host --load`。
+
+host 网络有助于排查 bridge/NAT、DNS 或宿主机本地代理访问问题，**不保证单独提高 PyPI 下载速度**。`Building wheel` 也不能单独证明正在编译：FlashAttention/causal-conv1d 的构建钩子可能仍在从 GitHub 下载预编译 wheel。确认有 `nvcc`/`ninja` 编译进程后，换网络模式才不会缩短这部分编译耗时。
+
+### 国内 pip 镜像与原生扩展下载停滞
+
+普通 Python 包可使用 [清华 TUNA PyPI 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)。在服务器仓库根目录执行：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg PYPI_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+该参数覆盖普通 pip 安装，Torch 仍使用官方 cu128 源；不会改变 apt 源、uv 的 Python 解释器下载或 GitHub Release 地址。镜像若暂未同步某个固定版本，可恢复官方 PyPI 源，不直接修改版本锁定。切换 `PYPI_INDEX_URL` 会使使用此参数的层及后续层重新执行；已有 pip 下载缓存仍可复用。不要增加 `--no-cache`。
+
+**当前 causal-conv1d 卡住的步骤要单独处理。** [上游 v1.7.0 安装代码](https://github.com/Dao-AILab/causal-conv1d/blob/v1.7.0/setup.py#L297-L318) 会用 `urllib.request.urlretrieve()` 访问 GitHub，普通 pip 源及 `PIP_DEFAULT_TIMEOUT` 不控制这次下载。新 Dockerfile 给默认安装增加 `-v`，便于看到 `Guessing wheel URL`；日志仍需结合下载/编译进程判断。
+
+可以使用本节前面的 HTTP/HTTPS 代理构建命令；代理地址必须真实可用，`--network host` 本身不提供代理。如果服务器没有可用代理，推荐在可访问 GitHub 的机器上下载 wheel，再上传服务器，避免每次构建等待 GitHub。
+
+当前 Python 3.12、Torch 2.8、CUDA 12、C++11 ABI TRUE、Linux x86_64 环境对应的文件名如下。**保存原文件名，不要把 cp311、torch2.7 或 ABI FALSE 的文件改名充当此文件。** 其它环境应从 [官方 Release](https://github.com/Dao-AILab/causal-conv1d/releases/tag/v1.7.0) 选择真正匹配的资产。
+
+```bash
+# 在网络可用的机器的仓库根目录执行，直接保存到构建所读取的 wheels 目录。
+mkdir -p docker/bench/wheels
+wheel_name=causal_conv1d-1.7.0+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+curl -fL --retry 5 --connect-timeout 30 --max-time 1800 \
+  -o "docker/bench/wheels/$wheel_name" \
+  "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.7.0/$wheel_name"
+```
+
+上述命令已将 `.whl` 保存到当前 checkout 的 `docker/bench/wheels/`。若直接在服务器仓库根目录下载，完成后用之前的构建命令重试即可；若在其它机器下载，把文件上传到**服务器 checkout 的同名目录**，保留 `.gitkeep`。wheel 被 Git 忽略，需要用 scp/rsync 等单独传输。Dockerfile 会按实际 Python/Torch/CUDA/ABI 查找准确文件名，找到后使用 `--no-index --no-deps` 安装该包，跳过其 GitHub 下载和源码编译。普通依赖仍需完成，因此这是该扩展的离线安装入口，不是整个镜像的离线构建。构建末尾仍执行 `pip check`，容器内按第 6 节验证原生扩展导入和 GPU 环境。
+
+本地 wheel 通过只读 build bind mount 使用，不将原始 wheel 复制到镜像层。FlashAttention 和 causal-conv1d 共用 `docker/bench/wheels/`，建议将两份文件一次放齐；改变目录内容可能使两个安装层及后续层重新执行。保持原来的 pip 源和前面依赖文件时，此前成功的 Torch、构建工具、requirements 层仍可复用。
+
+如果已有可信的内部 wheel 镜像/文件服务，也可直接传入这个**匹配 wheel 文件的完整 HTTPS 地址**（替换下面的占位符），不需要先上传本地文件：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg CAUSAL_CONV1D_WHEEL_URL='https://<可信文件服务>/<匹配的完整wheel文件名>.whl' \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+优先级为：匹配的本地 wheel → 显式指定的 wheel URL → 上游安装器。显式下载失败会报错，不再静默转入源码编译；curl 有下载进度、重试和超时。这里的 URL 参数只作用于 causal-conv1d，不是通用 GitHub 镜像开关，不填含访问密钥的地址。
+
+### FlashAttention 同样使用本地 wheel 或指定下载地址
+
+FlashAttention 的上游安装器也会从 GitHub Release 下载预编译 wheel，换 pip 镜像不能覆盖这次下载。Dockerfile 支持与 causal-conv1d 相同的优先级：**匹配的本地 wheel → `FLASH_ATTN_WHEEL_URL` → 上游安装器**，并继续保留默认安装分支的 `--no-cache-dir` 和不挂载 pip 缓存的修正。
+
+当前 Python 3.12、Torch 2.8、CUDA 12、C++11 ABI TRUE、Linux x86_64 对应以下 [官方 Release 资产](https://github.com/Dao-AILab/flash-attention/releases/tag/v2.8.3.post2)。在网络可用的机器的仓库根目录执行，命令会直接保存到 `docker/bench/wheels/`，与 causal-conv1d wheel 一起放置；若下载机器不是服务器，再将该文件上传到服务器 checkout 的同名目录：
+
+```bash
+mkdir -p docker/bench/wheels
+wheel_name=flash_attn-2.8.3.post2+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+curl -fL --retry 5 --connect-timeout 30 --max-time 1800 \
+  -o "docker/bench/wheels/$wheel_name" \
+  "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post2/$wheel_name"
+```
+
+服务器目录示例：
+
+```text
+docker/bench/wheels/
+  .gitkeep
+  flash_attn-2.8.3.post2+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+  causal_conv1d-1.7.0+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+```
+
+上传最新 Dockerfile 和 wheel 目录后，使用原构建命令重试；两个包匹配成功时均使用 `--no-index --no-deps` 安装，不运行它们的 GitHub 下载或源码编译。wheel 文件被 Git 忽略，必须单独上传，且不能将不匹配 ABI/版本的 wheel 改名。未放匹配 wheel 且未传地址时，日志会打印预期文件名并回到上游安装流程。
+
+已有可信 wheel 镜像/文件服务时，可同时指定两个完整下载地址。将下面占位符换成真正匹配的 HTTPS wheel 地址；若某包已有本地 wheel，其本地文件优先：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg FLASH_ATTN_WHEEL_URL='https://<可信文件服务>/<匹配的flash_attn文件名>.whl' \
+  --build-arg CAUSAL_CONV1D_WHEEL_URL='https://<可信文件服务>/<匹配的causal_conv1d文件名>.whl' \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+显式 URL 下载有进度、重试和超时，失败即报错；可叠加本节前面的普通包 `PYPI_INDEX_URL` 参数或真实可用的 HTTP/HTTPS 代理。构建后仍按第 6 节检查 `import flash_attn, causal_conv1d` 和 GPU 运行环境，不能仅凭 wheel 安装成功判断所有原生算子可用。
+
+### 已准备 wheel，却仍然出现 `Downloading flash_attn-*.tar.gz`
+
+`.tar.gz` 是源码发行包。这条日志本身不代表安装失败，也不能证明正在 CUDA 编译：上游构建钩子随后仍可能下载 GitHub wheel。但它说明该安装步骤没有走本地 wheel 或显式 wheel URL 分支。先在**服务器、实际 build context 的仓库根目录**检查：
+
+```bash
+pwd
+grep -nE 'FLASH_ATTN_WHEEL_URL|REQUIRE_EXTENSION_WHEELS|Expected FlashAttention' docker/bench/Dockerfile
+ls -lh docker/bench/wheels/
+```
+
+Dockerfile 应有上述参数/日志代码，wheel 目录应有完整、未改名的 `.whl` 文件。只有 `.gitkeep` 表示尚未把 wheel 传到服务器；wheel 被 Git 忽略，`git pull` 不会把它带过去。不要放到容器中的仓库目录、其它 checkout 或仓库根目录的 `wheels/`，构建读取的是末尾 `.` 对应 checkout 的 `docker/bench/wheels/`。如果使用自定义 `.dockerignore` 或 `Dockerfile.dockerignore`，也应确认没有排除该目录；仓库提供的白名单已允许该目录。
+
+更新后的 Dockerfile 在两个扩展的安装前都会打印 `Expected ... wheel:` 和 `/opt/jev-wheels` 中的文件列表。准备好两份 wheel 后，建议启用严格模式构建：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg REQUIRE_EXTENSION_WHEELS=1 \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+如之前使用了 `PYPI_INDEX_URL`，继续添加相同值。`REQUIRE_EXTENSION_WHEELS=1` 同时约束 FlashAttention 与 causal-conv1d：必须找到匹配的本地 wheel 或设置对应的完整 wheel URL；否则立即报错，不转入源码包安装流程。默认值 `0` 保留上游安装方式。此参数只约束这两个扩展，不限制其它依赖是否使用源码包。
+
+成功选择本地 FlashAttention 时日志应出现 `Installing local wheel: flash_attn-...whl`，随后 pip 显示 `Processing /opt/jev-wheels/...whl`。严格模式下若同一扩展步骤仍显示 `Collecting flash-attn`/下载 `.tar.gz`，应核对实际使用的 Dockerfile、构建参数及这段日志所属步骤，而非反复清空缓存。若仍无法判断，保留该步骤顶部的 RUN 命令、预期 wheel 名称和文件列表一起排查。
+
+### 本地 wheel 已成功安装，随后版本校验 `AssertionError`
+
+如果日志已显示 `Installing local wheel`、`Processing /opt/jev-wheels/...whl` 和 `Successfully installed flash-attn-2.8.3.post2`，随后在版本断言处退出，这次不是下载失败，也不需要重新下载 wheel。早期 Dockerfile 的校验误用了 `Version(...).base_version`，会把 `2.8.3.post2` 变成 `2.8.3`，因此与目标字符串 `2.8.3.post2` 比较必然失败。
+
+当前 Dockerfile 已改用 `.public`，保留 `.post2` 等公开版本后缀，只去掉 `+cu12...` 这类本地版本标签；causal-conv1d 也统一使用 `.public`，避免把预发行或其它 post 版本误当作目标版本，见 [packaging 版本 API](https://packaging.pypa.io/en/stable/version.html#packaging.version.Version.public)。两个校验都会打印实际安装版本，失败时说明目标与实际值。
+
+若手工修改服务器上的旧 Dockerfile，FlashAttention 的判断应为：
+
+```python
+Version(version("flash-attn")).public == "2.8.3.post2"
+```
+
+建议上传仓库最新 Dockerfile，保留现有 `docker/bench/wheels/` 文件和原构建参数重试；不加 `--no-cache`，不清理 builder 缓存。失败的安装层会从本地 wheel 重新安装，前面已成功且输入未变的依赖层可以复用。这只修复版本校验，原生扩展导入和 GPU 自检仍按第 6 节执行。
+
+### pip 报 `No matching distribution found for transformers==5.14.1`
+
+已核对 [PyPI 的 5.14.1 发行页](https://pypi.org/project/transformers/5.14.1/)：该版本存在，有通用 Python wheel，要求 Python >=3.10，与目标 Python 3.12 相容。仅有 `from versions: none` 不能证明版本不存在，也可能是网络、索引、代理或源未同步。保留其前面的重试、HTTP/TLS 和索引日志，不直接降级 Transformers。
+
+更新后的 Dockerfile 给普通 Python 包显式指定 `https://pypi.org/simple`，并支持覆盖 `PYPI_INDEX_URL`；Torch 独立保持 CUDA 12.8 专用源。各阶段拆成独立 RUN，普通依赖的 pip 下载使用 BuildKit cache mount，超时设为 120 秒、重试 8 次；FlashAttention 的安装单独禁用 pip 缓存挂载，原因见下一节。后续安装失败时，已成功的安装层和适用的下载缓存可以重用，见 [Docker 缓存说明](https://docs.docker.com/build/cache/optimize/#use-cache-mounts)。缓存位于同一 builder 内，不会自动跨服务器迁移。
+
+将最新 Dockerfile 上传到服务器后，在仓库根目录重试，并保存完整日志：
+
+```bash
+set -o pipefail
+docker build --network host --progress=plain \
+  --build-arg PYPI_INDEX_URL=https://pypi.org/simple \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 . \
+  2>&1 | tee docker-build.log
+```
+
+不加 `--no-cache`，以便复用已成功的层。第一次改用拆分后的 Dockerfile 时，旧失败 RUN 内已完成的 Torch 安装无法恢复为缓存层，需要重装一次；以后才能逐步复用。
+
+若仍失败，可以先用已拉取的基础镜像单独测试同一网络下是否能取到该版本（不需要 GPU）：
+
+```bash
+docker run --rm --network host pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel \
+  python -m pip download --no-deps --only-binary=:all: \
+  --index-url https://pypi.org/simple --dest /tmp/package-check transformers==5.14.1
+```
+
+若需要宿主机代理，这条 `docker run` 也要增加实际的 `-e HTTP_PROXY=... -e HTTPS_PROXY=...`。单包测试失败先修网络/代理/源，成功而构建失败再检查 builder 与测试容器的网络差异及完整构建日志。可以将 `PYPI_INDEX_URL` 指向已确认含全部固定版本的可信镜像，但不要把通用 PyPI 源替换到 Torch 的 cu128 安装行。
+
+### FlashAttention 报 `[Errno 18] Invalid cross-device link`
+
+若日志已打印 `Guessing wheel URL` 和 `Raw wheel path`，随后报从 `.whl` 移动到 `/root/.cache/pip/wheels/...` 的 `Invalid cross-device link`，这是文件跨挂载点移动失败。[FlashAttention 2.8.3.post2 的安装代码](https://github.com/Dao-AILab/flash-attention/blob/v2.8.3.post2/setup.py#L447-L468) 下载预编译 wheel 后使用 `os.rename()`；源码临时目录与 BuildKit 的 pip 缓存挂载属于不同文件系统，触发 EXDEV。构建日志中的 `No CUDA runtime is found` 和 setuptools 警告并非这次退出的原因。
+
+修正为：FlashAttention 这一条 RUN **移除** `--mount=type=cache,target=/root/.cache/pip,...`，并加 `--no-cache-dir`，让 pip 使用普通临时 wheel 目录。当前 Dockerfile 的默认联网安装分支保留这一设置，其 pip 命令如下；本地/显式 URL 分支则直接安装 wheel：
+
+```bash
+python -m pip install -v --no-cache-dir --index-url "$PYPI_INDEX_URL" --no-build-isolation \
+  -c /opt/jev-build/constraints.txt flash-attn==2.8.3.post2
+```
+
+仓库 Dockerfile 已包含该修正。更新服务器上的文件后，使用原构建命令重试即可，不加 `--no-cache`，不清理 builder 缓存；此前成功的 Torch、构建工具和 requirements 层可复用。FlashAttention 此步可能重新下载 wheel。也核对了 [causal-conv1d 1.7.0 的安装代码](https://github.com/Dao-AILab/causal-conv1d/blob/v1.7.0/setup.py#L297-L318)：它使用支持跨文件系统的 `shutil.move()`，保留其缓存挂载。
 
 Dockerfile 完成：
 
@@ -93,7 +268,7 @@ Dockerfile 完成：
 若希望进一步固定基础镜像，先保存 `docker image inspect pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel` 的 RepoDigests，再以确认过的 digest 传入：
 
 ```bash
-docker build -f docker/bench/Dockerfile -t jev-bench:cu128 \
+docker build --network host -f docker/bench/Dockerfile -t jev-bench:cu128 \
   --build-arg BASE_IMAGE='pytorch/pytorch@sha256:<你实际核验的digest>' .
 ```
 
@@ -104,10 +279,11 @@ docker build -f docker/bench/Dockerfile -t jev-bench:cu128 \
 先创建宿主机数据目录，再启动容器（按实际服务器路径修改 `JEV_HOST_ROOT`）：
 
 ```bash
-JEV_HOST_ROOT=/srv/jev
+JEV_HOST_ROOT="$HOME/srv/jev"
 mkdir -p "$JEV_HOST_ROOT"/{data,models,runs,hf-cache}
 
 docker run -d --name jev-bench --gpus all --shm-size=32g \
+  --network host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --mount type=bind,src="$JEV_HOST_ROOT/Jev-as-Controller",dst=/workspace/Jev-as-Controller \
   --mount type=bind,src="$JEV_HOST_ROOT/data",dst=/workspace/Jev-as-Controller/data \
@@ -121,6 +297,17 @@ docker exec -it jev-bench bash
 ```
 
 GPU 编号：`--gpus all` 暴露所有卡；评测命令内再用 `CUDA_VISIBLE_DEVICES` 选择。若改为 `--gpus '"device=..."'` 限制卡，容器内需重新检查编号，不照抄宿主机编号。`--shm-size=32g` 是上限，按机器内存调整。默认 root 创建的结果在宿主机可能归 root 所有，可按服务器惯例配置用户/缓存目录。
+
+Linux 上 `--network host`（等价于 `--net=host`，注意是两个横杠）让容器共享宿主机网络，容器内的 `127.0.0.1` 可以访问宿主机本地代理；不再需要 `-p` 端口映射。见 [Docker host 网络说明](https://docs.docker.com/engine/network/drivers/host/)。该选项不会自动配置 pip 代理；如果需要使用宿主机已有的 HTTP 代理，在容器内设置：
+
+```bash
+# 仅在宿主机确实有此代理时设置，地址/端口按实际修改。
+export HTTP_PROXY=http://127.0.0.1:7890
+export HTTPS_PROXY=http://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1
+```
+
+已创建的 bridge 容器不能通过 `docker exec` 或重启改成 host 网络；需要用上述挂载重新创建容器，可以改用新名字（如 `jev-bench-host`）保留原容器，后续 `docker exec` 也使用新名字。
 
 这里不使用 `--rm`，便于重入。退出交互 shell 不会删除容器。结果、权重、数据以及 checkout 中 `.deps-qwen36`/`.deps-xtuner`/reports 都在宿主机持久化；它们**不是**容器根文件系统的一次性内容。
 

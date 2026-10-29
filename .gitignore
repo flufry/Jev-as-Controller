@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv-bench-check/
+.venv-bench-wheels/
+.venv-bench-data/
 .deps*
 .env
 .env.*
@@ -15,3 +17,8 @@ reports/
 *.pth
 *.safetensors
 *.log
+docker/bench/wheels/*.whl
+docker/bench/wheels/*.part
+docker/bench/wheels/resolution.json
+docker/bench/wheels/resolved-constraints.txt
+docker/bench/wheels/SHA256SUMS

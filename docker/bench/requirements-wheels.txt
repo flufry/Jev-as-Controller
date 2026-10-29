@@ -1,0 +1,14 @@
+# Full set of pip packages used by docker/bench/Dockerfile.
+# Native extension wheel paths are added explicitly by prepare_bench_wheels.py.
+-r ../../requirements.txt
+-c constraints.txt
+torch==2.8.0+cu128
+torchvision==0.23.0+cu128
+pip
+uv>=0.8,<1
+setuptools==78.1.0
+wheel==0.48.0
+packaging==26.3
+ninja==1.13.2
+pyarrow==26.0.0
+nvidia-ml-py

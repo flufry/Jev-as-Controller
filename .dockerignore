@@ -1,4 +1,4 @@
-# Only dependency manifests are required to build the screening environment.
+# Dependency manifests, build helpers and host-prepared wheels form the context.
 # Repository code, data, weights and run outputs are mounted at container runtime.
 **
 !requirements.txt
@@ -6,3 +6,5 @@
 !docker/
 !docker/bench/
 !docker/bench/**
+docker/bench/wheels/*.part
+docker/bench/wheels/resolution.json

@@ -4,6 +4,11 @@ ARG BASE_IMAGE=pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG PYPI_INDEX_URL=https://pypi.org/simple
+# Build-time pip settings: use the host-prepared wheelhouse without persisting
+# an offline-only pip configuration into interactive runtime containers.
+ARG PIP_NO_INDEX=0
+ARG PIP_FIND_LINKS=/opt/jev-wheels
+ARG PIP_CONSTRAINT=""
 ENV PIP_DEFAULT_TIMEOUT=120 \
     PIP_RETRIES=8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -13,9 +18,16 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # The upstream image may use Python 3.11. Keep our 3.12 ABI separate and explicit.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
     /opt/conda/bin/python -m pip install --index-url "$PYPI_INDEX_URL" 'uv>=0.8,<1' \
     && /opt/conda/bin/uv python install 3.12.12 \
-    && /opt/conda/bin/uv venv --python 3.12.12 --seed /opt/jev
+    && if [[ "$PIP_NO_INDEX" == "1" ]]; then \
+      /opt/conda/bin/uv venv --python 3.12.12 /opt/jev \
+      && /opt/conda/bin/uv pip install --python /opt/jev/bin/python \
+        --no-index --find-links /opt/jev-wheels pip; \
+    else \
+      /opt/conda/bin/uv venv --python 3.12.12 --seed /opt/jev; \
+    fi
 ENV PATH="/opt/jev/bin:/opt/conda/bin:/usr/local/cuda/bin:${PATH}" \
     CUDA_HOME=/usr/local/cuda \
     TORCH_CUDA_ARCH_LIST=8.9 \
@@ -27,14 +39,17 @@ ENV PATH="/opt/jev/bin:/opt/conda/bin:/usr/local/cuda/bin:${PATH}" \
 # Keep completed installs in separate layers; retain downloads if a later step fails.
 # Torch must use the cu128 index, independently of the general Python package index.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
     python -m pip install torch==2.8.0 torchvision==0.23.0 \
       --index-url https://download.pytorch.org/whl/cu128
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
     python -m pip install --index-url "$PYPI_INDEX_URL" \
       setuptools==78.1.0 wheel==0.48.0 packaging==26.3 ninja==1.13.2
 COPY requirements.txt requirements-overlay.txt /opt/jev-build/
 COPY docker/bench/constraints.txt /opt/jev-build/constraints.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
     python -m pip install --index-url "$PYPI_INDEX_URL" \
       -c /opt/jev-build/constraints.txt -r /opt/jev-build/requirements.txt
 # flash-attn 2.8.3.post2 uses os.rename() for its downloaded wheel. A pip cache
@@ -56,7 +71,7 @@ RUN --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
         --output "/tmp/$wheel_name" "$FLASH_ATTN_WHEEL_URL" \
       && python -m pip install --no-cache-dir --no-index --no-deps "/tmp/$wheel_name" \
       && rm "/tmp/$wheel_name"; \
-    elif [[ "$REQUIRE_EXTENSION_WHEELS" == "1" ]]; then \
+    elif [[ "$REQUIRE_EXTENSION_WHEELS" == "1" || "$PIP_NO_INDEX" == "1" ]]; then \
       echo "ERROR: Matching FlashAttention wheel missing. Place $wheel_name in docker/bench/wheels/ or set FLASH_ATTN_WHEEL_URL." >&2; \
       exit 2; \
     else \
@@ -81,7 +96,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         --output "/tmp/$wheel_name" "$CAUSAL_CONV1D_WHEEL_URL" \
       && python -m pip install --no-index --no-deps "/tmp/$wheel_name" \
       && rm "/tmp/$wheel_name"; \
-    elif [[ "$REQUIRE_EXTENSION_WHEELS" == "1" ]]; then \
+    elif [[ "$REQUIRE_EXTENSION_WHEELS" == "1" || "$PIP_NO_INDEX" == "1" ]]; then \
       echo "ERROR: Matching causal-conv1d wheel missing. Place $wheel_name in docker/bench/wheels/ or set CAUSAL_CONV1D_WHEEL_URL." >&2; \
       exit 2; \
     else \
@@ -91,6 +106,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     fi \
     && python -c 'from importlib.metadata import version; from packaging.version import Version; installed=version("causal-conv1d"); print("Installed causal-conv1d:", installed); assert Version(installed).public == "1.7.0", f"Expected causal-conv1d 1.7.0, got {installed}"'
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=bind,source=docker/bench/wheels,target=/opt/jev-wheels \
     python -m pip install --index-url "$PYPI_INDEX_URL" \
       -c /opt/jev-build/constraints.txt pyarrow
 RUN python -m pip check \
