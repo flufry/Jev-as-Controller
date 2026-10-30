@@ -2,6 +2,8 @@
 
 本节为 [05](05-跨Benchmark粗筛运行手册.md) 准备 Video-MME v1、MLVU-Dev 七任务 MCQ 和 LVBench。下载入口 `scripts/download_bench_data.py` 会下载、整理目录并检查官方题目库存；不加载模型、不截取视频、不改变题序或候选选项。真实下载、YouTube 可用性和视频解码仍需在服务器验收。
 
+若改为 Windows 本地下载、上传后清理以节省本地空间，使用 [11-Windows本地分批下载与SCP上传.md](11-Windows本地分批下载与SCP上传.md)。该流程逐文件上传原始数据，然后在服务器使用 `--prepare-local` 整理，避免本地同时存储完整视频库和压缩包。
+
 ## 1. 宿主机准备（只需一次）
 
 宿主机下载快时，推荐直接在**宿主机**执行。以下路径对应 06 中的 `~/srv/jev` 布局；进入实际 checkout 后运行：
@@ -21,6 +23,63 @@ mkdir -p "$BENCH_DATA_ROOT"
 **MLVU 当前需要 HF 数据集访问权限**：先登录浏览器打开 [MLVU/MVLU](https://huggingface.co/datasets/MLVU/MVLU)，取得访问权限，再在运行脚本的同一用户下用 `hf auth login` 输入具有相应读取权限的 token。只有 CLI 登录不能代替网页访问申请。不要把 token 写进下载脚本。
 
 若直接在容器中下载，先 `cd /workspace/Jev-as-Controller`，用容器的 `python` 创建同名虚拟环境，并改用 `BENCH_DATA_ROOT=/workspace/Jev-as-Controller/data/benchmarks`。宿主机示例使用 `~/srv/jev/data/benchmarks`，与 06 的 data 挂载对应；不要默认写到宿主机 checkout 内的 data，否则可能被容器的独立挂载遮住。
+
+### 宿主机没有 Python：使用已有项目容器
+
+无需在宿主机安装 Python，也无需重新构建镜像。下面使用已迁移的项目容器 `jev-bench-migrated-v2`；实际容器名不同时替换。先在**宿主机**执行：
+
+```bash
+sudo docker inspect jev-bench-migrated-v2 --format '{{.HostConfig.NetworkMode}} {{json .Mounts}}'
+sudo docker exec -it jev-bench-migrated-v2 bash
+```
+
+确认网络为 `host`，并且 `/public/hyj/jev/data` 挂载到 `/workspace/Jev-as-Controller/data`。数据会直接保存到该宿主机目录，不占容器可写层。`docker exec` 使用现有容器的网络，不能再给它添加 `--network host`。
+
+以下命令均在**容器内**执行。将下载工具安装到单独的虚拟环境，不调整推理环境依赖：
+
+```bash
+cd /workspace/Jev-as-Controller
+unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DOWNLOAD_TIMEOUT=120
+export HF_HUB_ETAG_TIMEOUT=60
+BENCH_DATA_ROOT=/workspace/Jev-as-Controller/data/benchmarks
+mkdir -p "$BENCH_DATA_ROOT"
+python -m venv /workspace/Jev-as-Controller/data/.venv-bench-data
+BENCH_PY=/workspace/Jev-as-Controller/data/.venv-bench-data/bin/python
+"$BENCH_PY" -m pip install -U huggingface_hub pyarrow 'yt-dlp[default]' \
+  --index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+```
+
+MLVU 仍需先在其官方 HF 页面取得访问权限，再在这个下载环境登录；交互输入读取 token，不把 token 写入命令：
+
+```bash
+/workspace/Jev-as-Controller/data/.venv-bench-data/bin/hf auth login
+```
+
+为 LVBench 安装 Deno。以下适用于本项目的 Linux x86_64 服务器，利用容器 Python 解压，不依赖宿主机 Python 或额外的 unzip 包：
+
+```bash
+export DENO_INSTALL=/workspace/Jev-as-Controller/data/.bench-deno
+mkdir -p "$DENO_INSTALL/bin"
+curl -fL --retry 5 --connect-timeout 30 \
+  https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip \
+  -o "$DENO_INSTALL/deno.zip" \
+  && "$BENCH_PY" -m zipfile -e "$DENO_INSTALL/deno.zip" "$DENO_INSTALL/bin" \
+  && chmod +x "$DENO_INSTALL/bin/deno"
+export PATH="$DENO_INSTALL/bin:$PATH"
+deno --version
+```
+
+然后依次下载三个 benchmark：
+
+```bash
+"$BENCH_PY" scripts/download_bench_data.py --bench videomme --data-root "$BENCH_DATA_ROOT"
+"$BENCH_PY" scripts/download_bench_data.py --bench mlvu --data-root "$BENCH_DATA_ROOT"
+"$BENCH_PY" scripts/download_bench_data.py --bench lvbench --data-root "$BENCH_DATA_ROOT"
+```
+
+也可以用 `--bench all` 按上述顺序执行，遇到一个失败就停止。镜像源只作用于 HF 数据，无法加速 LVBench 的 YouTube 视频。下载不使用 GPU；与权重同时下载会共享网络和磁盘带宽。Video-MME 会同时保留 ZIP 和解压视频，需为两者预留空间。重新进入容器后，需重新设置上述变量和 Deno 的 PATH，但不必重建虚拟环境、重复安装工具。
 
 ## 2. Video-MME v1
 
@@ -106,6 +165,46 @@ YouTube 的网络、地区/登录限制和视频下架可能导致缺失。脚�
 ```
 
 首次下载会将 HF commit SHA 写入各 bench 的 `download_revision.json`；中断重跑、从仅标注切换到完整下载时复用该 SHA，不重新追踪 main。支持给单个 bench 显式传入 `--revision <完整commit>`；与已有记录不一致时使用新的 `--data-root`。已有标注内容不同时拒绝覆盖。下载线程数默认 2，可用 `--workers 4` 调整 HF 文件下载并发。
+
+### 已下载数据：自动解压与整理
+
+前面的 `download_bench_data.py` 在下载结束后已自动完成这一步。若下载中断后需要单独整理，或采用 11 的分批上传方式，可以在**容器内**运行新入口；它仅操作已有文件，不访问 HF 或 YouTube：
+
+```bash
+cd /workspace/Jev-as-Controller
+bash scripts/prepare_bench_data.sh \
+  --data-root /workspace/Jev-as-Controller/data/benchmarks
+```
+
+脚本优先使用 `data/.venv-bench-data/bin/python`，其次是仓库 `.venv-bench-data/bin/python`、`python3`、`python`；也可以显式指定 `--python /opt/jev/bin/python` 或通过 `BENCH_PY` 指定下载环境。Video-MME 整理需要该 Python 环境已安装 `pyarrow`。若只下载了其中一个 benchmark，用 `--bench videomme`、`--bench mlvu` 或 `--bench lvbench` 单独整理。
+
+在**宿主机**没有 Python 时，可直接调用已运行的容器执行：
+
+```bash
+sudo docker exec -it -w /workspace/Jev-as-Controller jev-bench-migrated-v2 \
+  bash scripts/prepare_bench_data.sh \
+  --data-root /workspace/Jev-as-Controller/data/benchmarks
+```
+
+输入必须是本节下载入口或 11 上传入口的标准布局：每个 benchmark 包含 `download_revision.json` 和 `download/`。不伪造缺失的版本记录，也不自动猜测其它来源压缩包的目录。输出与评测需要的路径对应：
+
+```text
+data/benchmarks/
+├── videomme/
+│   ├── official.json                  # 由 Parquet 转换
+│   ├── videos/<videoID>.mp4            # 从 download/videos_chunked_*.zip 解压
+│   └── download/                      # 保留原始文件和 ZIP
+├── mlvu/
+│   ├── json/[1-7]_*.json              # 官方七任务标注
+│   ├── video-map.json                 # 标注中的视频名到实际视频路径的映射
+│   └── download/MLVU/video/...         # 沿用原视频位置，不复制一份
+└── lvbench/
+    ├── video_info.meta.jsonl
+    ├── videos/<key>.mp4               # 沿用已下载/上传视频，不需要解压
+    └── missing-videos.json             # 缺失视频清单
+```
+
+如果 data 挂载与前面的示例一致，上述目录在宿主机就是 `/public/hyj/jev/data/benchmarks`。可重复运行；已解压且大小一致的 Video-MME 视频会跳过，不删除 ZIP、缓存或原始视频。缺失视频、冲突标注或损坏 ZIP 会报错，不把不完整数据标记为完成。整理成功后仍需下一节构建清单，检查视频几何信息与时长。
 
 ## 6. 回到容器构建清单
 

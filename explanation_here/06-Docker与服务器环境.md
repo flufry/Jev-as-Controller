@@ -73,6 +73,8 @@ git status --short
 
 **宿主机下载快、Docker 内 pip 下载慢时，优先使用 [08-Wheel预下载与离线安装.md](08-Wheel预下载与离线安装.md)**：一次收集全部 Python 依赖及传递依赖，再让构建从本地 wheel 目录安装，覆盖 pyarrow、Torch/CUDA 依赖和两个原生扩展。
 
+宿主机没有 Python 时，在仓库根目录运行 `bash scripts/prepare_bench_wheels.sh`；该入口借用已有官方基础镜像和 host 网络准备依赖，不要求先构建成功。大容量磁盘缓存路径和镜像源设置见 08 第 1.1 节。
+
 在**服务器的仓库根目录**运行：
 
 ```bash
@@ -80,7 +82,6 @@ docker build --network host --progress=plain --pull \
   -f docker/bench/Dockerfile -t jev-bench:cu128 .
 docker image inspect jev-bench:cu128 --format '{{.Id}}'
 ```
-sha256:3b74968dfd5e26e85cf682e67d11e2bd7e4a5ee7b691544a7e238c2d7fed5f47
 
 新增 `.dockerignore` 使用最小依赖文件白名单，避免把视频、权重、Git 历史和历史结果传入 build context。代码在运行时挂载，因此代码变更无需重新构建镜像；依赖变更需要重建。
 
@@ -98,6 +99,37 @@ docker build --network host --pull -f docker/bench/Dockerfile -t jev-bench:cu128
 这是 Docker [预定义的代理构建参数](https://docs.docker.com/build/building/variables/#proxy-arguments)，无需修改 Dockerfile 加入代理 ENV。只有代理确实在该地址运行时才添加。若自定义 BuildKit 报 `network.host is not allowed`，需让 builder 允许 `network.host` entitlement，并在 `docker buildx build` 中传 `--allow network.host --network host --load`。
 
 host 网络有助于排查 bridge/NAT、DNS 或宿主机本地代理访问问题，**不保证单独提高 PyPI 下载速度**。`Building wheel` 也不能单独证明正在编译：FlashAttention/causal-conv1d 的构建钩子可能仍在从 GitHub 下载预编译 wheel。确认有 `nvcc`/`ninja` 编译进程后，换网络模式才不会缩短这部分编译耗时。
+
+### apt 下载 502、Ubuntu 镜像与代理绕过
+
+若构建在 `apt-get install` 报 `502 Bad Gateway [IP: 127.0.0.1 7890]`，说明系统包下载经过了本地代理，当前代理/上游请求失败；仅凭该日志不能判断是代理本身还是 Ubuntu 站点故障。此时还未进入 pip 安装。不要在宿主机执行 `apt --fix-missing` 来修复容器构建。
+
+Dockerfile 现支持 `APT_MIRROR`（默认空，保留基础镜像的软件源），同时为 update/install 配置 5 次下载重试及 HTTP/HTTPS 60 秒超时。镜像替换兼容传统 `sources.list`、`.list` 和 DEB822 `.sources`，保留原 Ubuntu 版本代号、组件和签名配置。按 [清华 Ubuntu 镜像说明](https://mirrors.tuna.tsinghua.edu.cn/help/ubuntu/)，默认保留官方 security 源，避免安全更新同步延迟。
+
+先同步更新后的 Dockerfile。在服务器仓库根目录，若国内镜像可以直连，推荐仅让 apt 绕过代理：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu \
+  --build-arg APT_NO_PROXY=1 \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+`APT_NO_PROXY=1` 使用 [APT 的代理配置](https://manpages.ubuntu.com/manpages/noble/man1/apt-transport-http.1.html)将 apt 的 HTTP/HTTPS 代理设为 `DIRECT`，作用于该 RUN 的 update/install；不会清除后续 pip、uv 和 GitHub 下载需要的代理。即便 Docker 客户端自动注入代理，也可单独绕过 apt。直连网络不可用时，去掉此参数，先确认 `127.0.0.1:7890` 对实际构建器可达且代理可正常下载，再使用本节前面的 HTTP/HTTPS_PROXY 构建参数。[Docker 代理配置说明](https://docs.docker.com/engine/cli/proxy/)
+
+如果已经按 08 收齐全部 wheel，继续使用本地安装参数：
+
+```bash
+docker build --network host --progress=plain \
+  --build-arg APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu \
+  --build-arg APT_NO_PROXY=1 \
+  --build-arg PIP_NO_INDEX=1 \
+  --build-arg PIP_CONSTRAINT=/opt/jev-wheels/resolved-constraints.txt \
+  --build-arg REQUIRE_EXTENSION_WHEELS=1 \
+  -f docker/bench/Dockerfile -t jev-bench:cu128 .
+```
+
+`PIP_NO_INDEX` 不控制 apt。直接重跑构建即可复用适用的成功层，不加 `--no-cache`；失败的 apt RUN 会重新执行，不能依赖它保存上次已下载的系统包。开发机仅验证了 shell 语法、两类源格式的替换和参数传递，真实网络下载与 Docker 构建仍需在服务器验收。
 
 ### 国内 pip 镜像与原生扩展下载停滞
 
@@ -364,7 +396,44 @@ hf download ZhuYuhan/VideoJev-4B \
   --revision 1c1a253bf90dfa66176124d25a48ffb791d517d5 --local-dir models/VideoJev-4B
 ```
 
-然后按 05 文档依次执行：完整清单 → 抽样 → `check_bench_inputs.py --budget` → VideoJev pilot → 正式两模型 → CPU 融合 → 汇总。下载完成后再设置：
+权重准备好后，按 05 文档依次执行：完整清单 → 抽样 → `check_bench_inputs.py --budget` → VideoJev pilot → 正式两模型 → CPU 融合 → 汇总。官方站点下载慢时可先按下节切换镜像；下载完成后再设置离线运行环境。
+
+### 权重没有下齐时：使用 Hugging Face 镜像源
+
+模型还未下载完整、官方站点访问慢时，可以先尝试第三方 [HF-Mirror](https://hf-mirror.com/)；它提供 `HF_ENDPOINT` 配置方式。无需另一台服务器存储权重，也无需在宿主机安装 Python。下面在**已配置好的容器内**执行，下载直接写入挂载的 models 目录；原模型和 commit 不变。镜像站的网络速度、仓库及固定 revision 可用性需要实际验证。
+
+```bash
+cd /workspace/Jev-as-Controller
+unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_ETAG_TIMEOUT=60
+export HF_HUB_DOWNLOAD_TIMEOUT=120
+
+# 确认模型实际写入大容量挂载盘。
+df -hT models
+python -c 'from huggingface_hub import constants; print(constants.ENDPOINT)'
+
+hf download Qwen/Qwen3.6-35B-A3B \
+  --revision 995ad96eacd98c81ed38be0c5b274b04031597b0 \
+  --local-dir models/Qwen3.6-35B-A3B
+
+hf download ZhuYuhan/VideoJev-4B \
+  --revision 1c1a253bf90dfa66176124d25a48ffb791d517d5 \
+  --local-dir /public/hyj/jev/models/VideoJev-4B
+```
+
+`HF_HUB_DISABLE_XET=1` 用于尝试 HTTP 下载路径，避免镜像下载又依赖 Xet 服务；不要启用离线模式进行下载。环境变量需在新启动的 hf/Python 进程导入 huggingface_hub 之前设置，见 [官方环境变量说明](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables)。若使用正在运行的 Python 解释器，退出并重新启动。
+
+重复执行相同命令可复用本地完整文件和下载缓存，保留模型目录内 `.cache/huggingface` 元数据。下载命令成功结束后再开启下面的离线推理环境，并给评测入口传入本地 `models/...` 路径。若镜像缺少指定 commit，恢复官方源或采用下载中转，不更改项目锁定版本。
+
+回到官方源：
+
+```bash
+unset HF_ENDPOINT HF_HUB_DISABLE_XET
+```
+
+### 下载完成后的离线运行
 
 ```bash
 source scripts/env_qwen36.sh
@@ -388,6 +457,8 @@ python scripts/eval_bench_videojev.py \
 重入容器需要重新 source 环境；中断后同配置加 `--resume`，不要删除旧结果。完成后把 `runs/screen/*/summary/results.*` 和总表取回本地即可查看；原视频和权重无需回传。
 
 ## 8. 保存可复用环境与验证范围
+
+另一台服务器已有可用环境时，优先按 [10-Docker环境跨服务器迁移.md](10-Docker环境跨服务器迁移.md) 保存和传输，无需重新预下载 wheel。该文档同时覆盖容器中后装依赖的 commit、宿主机数据/后端的单独迁移和 `/public` 挂载命令。
 
 镜像不含运行时挂载的数据/代码/权重/编译后端。可保存并在另一个兼容服务器加载：
 

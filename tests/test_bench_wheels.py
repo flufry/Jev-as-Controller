@@ -1,5 +1,6 @@
 """Offline wheel preparation checks; no downloads, CUDA, or real model packages."""
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,22 @@ def wheel(directory, name, version, tag="py3-none-any", dependencies=(), metadat
 
 
 class WheelhouseTests(unittest.TestCase):
+    def test_extension_download_without_curl_uses_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            fixture = wheel(base, "fixture", "1.0").read_bytes()
+            output = base / "output"
+            output.mkdir()
+            with patch.object(prepare, "WHEELS", output), \
+                    patch.object(prepare.shutil, "which", return_value=None), \
+                    patch.object(prepare.urllib.request, "urlopen", return_value=BytesIO(fixture)) as urlopen, \
+                    patch.object(prepare, "run") as run:
+                actual = prepare.fetch_extension("flash_attn", "2.8.3.post2", "flash-attention", None, {})
+            self.assertEqual(fixture, actual.read_bytes())
+            self.assertEqual([], list(output.glob("*.part")))
+            self.assertIn("/releases/download/v2.8.3.post2/", urlopen.call_args.args[0])
+            run.assert_not_called()
+
     def test_external_work_and_wheels_keep_checkout_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -89,7 +106,8 @@ class WheelhouseTests(unittest.TestCase):
                 Path(command[command.index("--output") + 1]).write_bytes(b"partial")
                 raise subprocess.CalledProcessError(28, command)
 
-            with patch.object(prepare, "WHEELS", destination), patch.object(prepare, "run", interrupted):
+            with patch.object(prepare, "WHEELS", destination), patch.object(prepare, "run", interrupted), \
+                    patch.object(prepare.shutil, "which", return_value="/usr/bin/curl"):
                 with self.assertRaises(subprocess.CalledProcessError):
                     prepare.fetch_extension("causal_conv1d", "1.7.0", "causal-conv1d", None, {})
             self.assertEqual([], list(destination.glob("*.whl")))

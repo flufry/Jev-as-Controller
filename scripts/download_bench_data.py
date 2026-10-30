@@ -149,7 +149,7 @@ def mlvu(base, download, annotations_only):
         write_json(base / "video-map.json", mapping)
 
 
-def lvbench(base, download, annotations_only, js_runtime, cookies=None):
+def lvbench(base, download, annotations_only, js_runtime, cookies=None, prepare_local=False):
     annotation = download / "video_info.meta.jsonl"
     rows = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line.strip()]
     validate_lvbench(rows)
@@ -163,17 +163,19 @@ def lvbench(base, download, annotations_only, js_runtime, cookies=None):
     videos.mkdir(parents=True, exist_ok=True)
     urls = base / "youtube-urls.txt"
     urls.write_text("".join(f"https://www.youtube.com/watch?v={key}\n" for key in keys), encoding="utf-8")
-    runtime = js_runtime.split(":", 1)
-    if not shutil.which(runtime[-1]):
-        raise RuntimeError(f"JavaScript runtime not found: {js_runtime}; see 05 download instructions")
-    command = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--ignore-errors", "--no-playlist",
-               "--continue", "--no-overwrites", "--retries", "5", "--fragment-retries", "5",
-               "--js-runtimes", js_runtime, "--format", "bestvideo[ext=mp4]/best[ext=mp4]",
-               "--output", str(videos / "%(id)s.%(ext)s"),
-               "--download-archive", str(base / "youtube-completed.txt"), "--batch-file", str(urls)]
-    if cookies:
-        command += ["--cookies", str(cookies)]
-    status = subprocess.run(command, check=False).returncode
+    status = 0
+    if not prepare_local:
+        runtime = js_runtime.split(":", 1)
+        if not shutil.which(runtime[-1]):
+            raise RuntimeError(f"JavaScript runtime not found: {js_runtime}; see 05 download instructions")
+        command = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--ignore-errors", "--no-playlist",
+                   "--continue", "--no-overwrites", "--retries", "5", "--fragment-retries", "5",
+                   "--js-runtimes", js_runtime, "--format", "bestvideo[ext=mp4]/best[ext=mp4]",
+                   "--output", str(videos / "%(id)s.%(ext)s"),
+                   "--download-archive", str(base / "youtube-completed.txt"), "--batch-file", str(urls)]
+        if cookies:
+            command += ["--cookies", str(cookies)]
+        status = subprocess.run(command, check=False).returncode
     missing = [key for key in keys if not (videos / (key + ".mp4")).is_file()
                or (videos / (key + ".mp4")).stat().st_size == 0]
     # This is a live status file, updated after each attempt; missing videos are
@@ -188,6 +190,7 @@ def main():
     parser.add_argument("--bench", choices=[*REPOS, "all"], required=True)
     parser.add_argument("--data-root", type=Path, default=ROOT / "data/benchmarks")
     parser.add_argument("--annotations-only", action="store_true")
+    parser.add_argument("--prepare-local", action="store_true", help="Arrange already uploaded files; no network downloads")
     parser.add_argument("--revision", help="Exact HF revision for one benchmark; recorded/reused automatically")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--js-runtime", default="deno", help="yt-dlp runtime, e.g. deno or node")
@@ -197,13 +200,19 @@ def main():
         parser.error("--revision applies to one benchmark; call the three separately")
     if args.workers < 1:
         parser.error("--workers must be >= 1")
-    if os.environ.get("HF_HUB_OFFLINE", "0").upper() in ("1", "TRUE", "YES", "ON"):
+    if not args.prepare_local and os.environ.get("HF_HUB_OFFLINE", "0").upper() in ("1", "TRUE", "YES", "ON"):
         parser.error("unset HF_HUB_OFFLINE before downloading")
     for bench in REPOS if args.bench == "all" else [args.bench]:
         base = args.data_root.resolve() / bench
-        download = snapshot(bench, base, args.annotations_only, args.revision, args.workers)
+        if args.prepare_local:
+            record = json.loads((base / "download_revision.json").read_text(encoding="utf-8"))
+            if record["repo"] != REPOS[bench] or (args.revision and args.revision != record["revision"]):
+                raise ValueError("Local revision/repository mismatch")
+            download = base / "download"
+        else:
+            download = snapshot(bench, base, args.annotations_only, args.revision, args.workers)
         if bench == "lvbench":
-            lvbench(base, download, args.annotations_only, args.js_runtime, args.cookies)
+            lvbench(base, download, args.annotations_only, args.js_runtime, args.cookies, args.prepare_local)
         else:
             {"videomme": videomme, "mlvu": mlvu}[bench](base, download, args.annotations_only)
         print(f"{bench}: {'annotations' if args.annotations_only else 'download and file inventory'} ready at {base}", flush=True)

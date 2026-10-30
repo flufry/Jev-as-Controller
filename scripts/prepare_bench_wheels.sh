@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Linux host entry point: use the existing base image instead of host Python.
-set -euo pipefail
+set -Eeuo pipefail
+report_failure() {
+  local status=$?
+  echo "ERROR: wheel preparation failed at host line ${BASH_LINENO[0]} (exit $status)." >&2
+  exit "$status"
+}
+trap report_failure ERR
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'HELP'
@@ -45,22 +51,37 @@ docker run --rm --network host --platform linux/amd64 \
   --workdir /workspace/Jev-as-Controller \
   --env HOME=/cache/home --env TMPDIR=/cache/tmp --env PIP_CACHE_DIR=/cache/pip \
   --env PIP_CONFIG_FILE=/dev/null --env PIP_NO_INDEX=0 --env PIP_CONSTRAINT= \
-  --env PYTHONNOUSERSITE=1 --env PYTHONDONTWRITEBYTECODE=1 \
+  --env PYTHONNOUSERSITE=1 --env PYTHONDONTWRITEBYTECODE=1 --env PYTHONUNBUFFERED=1 \
+  --env BASH_ENV=/dev/null \
   --env UV_CACHE_DIR=/cache/uv --env UV_PYTHON_INSTALL_DIR=/cache/python \
   --env "JEV_PYPI_INDEX_URL=${JEV_PYPI_INDEX_URL:-https://pypi.org/simple}" \
   "${proxy_args[@]}" \
   --entrypoint /bin/bash \
   "${JEV_DOWNLOAD_IMAGE:-pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel}" \
-  -c '
-    set -euo pipefail
-    command -v curl >/dev/null
+  --noprofile --norc -c '
+    set -Eeuo pipefail
+    phase=startup
+    report_failure() {
+      local status=$?
+      echo "ERROR: preparation container failed during $phase (exit $status)." >&2
+      exit "$status"
+    }
+    trap report_failure ERR
+    echo "[1/4] Checking base image Python"
+    /opt/conda/bin/python --version
+    phase=bootstrap-venv
+    echo "[2/4] Preparing bootstrap environment and uv"
     if [[ ! -x /cache/bootstrap/bin/python ]]; then
       /opt/conda/bin/python -m venv /cache/bootstrap
     fi
     /cache/bootstrap/bin/python -m pip install --disable-pip-version-check \
       --timeout 120 --retries 8 --index-url "$JEV_PYPI_INDEX_URL" "uv>=0.8,<1"
+    phase=python-install
+    echo "[3/4] Preparing Python 3.12.12"
     /cache/bootstrap/bin/uv python install 3.12.12
     bench_python="$(/cache/bootstrap/bin/uv python find 3.12.12)"
+    phase=wheel-download
+    echo "[4/4] Downloading and checking wheels"
     exec "$bench_python" scripts/prepare_bench_wheels.py \
       --wheel-dir /opt/jev-wheels --work-dir /cache/venv \
       --index-url "$JEV_PYPI_INDEX_URL" "$@"

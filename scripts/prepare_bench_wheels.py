@@ -11,6 +11,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 import venv
 import zipfile
 
@@ -64,8 +67,27 @@ def fetch_extension(name: str, version: str, repository: str,
         return destination
     partial = destination.with_suffix(".whl.part")
     url = override or f"https://github.com/Dao-AILab/{repository}/releases/download/v{version}/{filename}"
-    run(["curl", "--fail", "--location", "--retry", "5", "--connect-timeout", "30",
-         "--max-time", "1800", "--output", str(partial), url], env)
+    if shutil.which("curl"):
+        run(["curl", "--fail", "--location", "--retry", "5", "--connect-timeout", "30",
+             "--max-time", "1800", "--output", str(partial), url], env)
+    else:
+        # The upstream preparation image need not contain curl. Python follows
+        # HTTPS redirects and reads proxy settings without installing apt packages.
+        for attempt in range(1, 7):
+            print(f"Downloading {filename} with Python (attempt {attempt}/6)", flush=True)
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response, partial.open("wb") as output:
+                    transferred = 0
+                    while chunk := response.read(8 * 1024 * 1024):
+                        output.write(chunk)
+                        transferred += len(chunk)
+                        print(f"{filename}: {transferred / (1024 * 1024):.1f} MiB", flush=True)
+                break
+            except (OSError, urllib.error.URLError):
+                if attempt == 6:
+                    raise
+                print("Download interrupted; retrying...", flush=True)
+                time.sleep(min(2 ** attempt, 30))
     validate_wheel(partial)
     partial.replace(destination)
     return destination
@@ -111,8 +133,6 @@ def main() -> None:
     libc, libc_version = platform.libc_ver()
     if libc != "glibc" or tuple(map(int, libc_version.split(".")[:2])) < (2, 35):
         parser.error("The preparation environment needs glibc >= 2.35 (e.g. Ubuntu 22.04/24.04).")
-    if not shutil.which("curl"):
-        parser.error("curl is required")
     WHEELS = args.wheel_dir.resolve()
     WHEELS.mkdir(parents=True, exist_ok=True)
     work = args.work_dir.resolve()
