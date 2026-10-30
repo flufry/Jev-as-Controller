@@ -20,11 +20,11 @@
 
 官方入口：
 
-| Benchmark | 标注/视频来源 | 本实现读取的标注 |
-|---|---|---|
+| Benchmark    | 标注/视频来源                                                                                                  | 本实现读取的标注                                                                                       |
+| ------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Video-MME v1 | [官方仓库](https://github.com/BradyFU/Video-MME)、[HF 数据](https://huggingface.co/datasets/lmms-eval/Video-MME) | HF Parquet，或其逐题 JSON/JSONL 导出；字段 `question_id/videoID/duration/question/options/answer` 等 |
-| MLVU-Dev | [官方仓库](https://github.com/JUNJIE99/MLVU)、[HF：MLVU/MVLU](https://huggingface.co/datasets/MLVU/MVLU) | 原发行版七个任务 JSON，或已合并且有 `official_id` 的 JSON |
-| LVBench | [官方仓库](https://github.com/zai-org/LVBench)、[HF 数据](https://huggingface.co/datasets/zai-org/LVBench) | `video_info.meta.jsonl`，每视频一行，含 `qa` |
+| MLVU-Dev     | [官方仓库](https://github.com/JUNJIE99/MLVU)、[HF：MLVU/MVLU](https://huggingface.co/datasets/MLVU/MVLU)         | 原发行版七个任务 JSON，或已合并且有 `official_id` 的 JSON                                            |
+| LVBench      | [官方仓库](https://github.com/zai-org/LVBench)、[HF 数据](https://huggingface.co/datasets/zai-org/LVBench)       | `video_info.meta.jsonl`，每视频一行，含 `qa`                                                       |
 
 具体工具安装、HF 登录、Deno/Node、下载目录及失败重试见 [09-三个Benchmark数据下载.md](09-三个Benchmark数据下载.md)。推荐在下载速度正常的宿主机执行，进入实际 checkout 后准备独立工具环境：
 
