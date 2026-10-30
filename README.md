@@ -26,17 +26,17 @@ Controller 需要两模型各自的推理。已保存两份候选分数后，融
 
 ## 评测设置
 
-| 项目 | 当前设置 |
-| --- | --- |
-| 数据 | LongVideoBench validation：1337 题、753 个视频 |
-| π₀ | Qwen3.6-35B-A3B，BF16，无量化、无 CPU/disk offload |
-| Fₛ | VideoJev-4B，候选 softmax 概率 |
-| 两条独立基线 | 4 FPS，最多 4096 帧 |
-| Controller 的两模型来源 | 2 FPS，最多 2048 帧 |
-| 上下文 / 视觉 token 预算 | 262144 / 24576 |
-| 模态 | 原始视频，不使用字幕或音频 |
-| 抽样种子 | 42、43、44；不同种子重新抽题 |
-| 实际硬件 | 6 张 RTX 4090 放置 Qwen，另 1 张放置 VideoJev |
+| 项目                     | 当前设置                                           |
+| ------------------------ | -------------------------------------------------- |
+| 数据                     | LongVideoBench validation：1337 题、753 个视频     |
+| π₀                     | Qwen3.6-35B-A3B，BF16，无量化、无 CPU/disk offload |
+| Fₛ                      | VideoJev-4B，候选 softmax 概率                     |
+| 两条独立基线             | 4 FPS，最多 4096 帧                                |
+| Controller 的两模型来源  | 2 FPS，最多 2048 帧                                |
+| 上下文 / 视觉 token 预算 | 262144 / 24576                                     |
+| 模态                     | 原始视频，不使用字幕或音频                         |
+| 抽样种子                 | 42、43、44；不同种子重新抽题                       |
+| 实际硬件                 | 6 张 RTX 4090 放置 Qwen，另 1 张放置 VideoJev      |
 
 超过帧数上限时均匀覆盖完整视频。空间网格在固定视觉预算内选择。两模型同一协议的逐视频时间线与几何必须一致。
 
@@ -53,20 +53,20 @@ Controller 需要两模型各自的推理。已保存两份候选分数后，融
 
 采用整数最大余数法分配四个官方时长组的配额：
 
-| 官方时长组 | val 题数 | 每个 seed 抽题数 |
-| --- | ---: | ---: |
-| 8–15 秒 | 189 | 14 |
-| 15–60 秒 | 172 | 13 |
-| 180–600 秒 | 412 | 31 |
-| 900–3600 秒 | 564 | 42 |
+| 官方时长组   | val 题数 | 每个 seed 抽题数 |
+| ------------ | -------: | ---------------: |
+| 8–15 秒     |      189 |               14 |
+| 15–60 秒    |      172 |               13 |
+| 180–600 秒  |      412 |               31 |
+| 900–3600 秒 |      564 |               42 |
 
-| 方法 | seed42 | seed43 | seed44 | 平均准确率 | 样本方差 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6-35B-A3B | 67.00 | 69.00 | 71.00 | 69.00 | 4.0000 |
-| VideoJev-4B | 64.00 | 68.00 | 68.00 | 66.67 | 5.3333 |
-| Qwen3.6-35B-A3B + VideoJev-4B | 65.46 | 68.20 | 69.38 | 67.68 | 4.0444 |
-| Jev-as-Controller | 67.00 | 73.00 | 78.00 | **72.67** | 30.3333 |
-| Qwen3.6-35B-A3B or VideoJev-4B | 74.00 | 78.00 | 80.00 | 77.33 | 9.3333 |
+| 方法                           | seed42 | seed43 | seed44 |      平均准确率 | 样本方差 |
+| ------------------------------ | -----: | -----: | -----: | --------------: | -------: |
+| Qwen3.6-35B-A3B                |  67.00 |  69.00 |  71.00 |           69.00 |   4.0000 |
+| VideoJev-4B                    |  64.00 |  68.00 |  68.00 |           66.67 |   5.3333 |
+| Qwen3.6-35B-A3B + VideoJev-4B  |  65.46 |  68.20 |  69.38 |           67.68 |   4.0444 |
+| Jev-as-Controller              |  67.00 |  73.00 |  78.00 | **72.67** |  30.3333 |
+| Qwen3.6-35B-A3B or VideoJev-4B |  74.00 |  78.00 |  80.00 |           77.33 |   9.3333 |
 
 共 300 题次，实际为 **283 道互异题、251 个视频**；三个 seed 分别涉及 95、96、97 个视频。抽样单位是问题，不保证每份 100 题来自 100 个不同视频；不同 seed 允许重叠，也不排除历史实验抽过的问题。
 
@@ -76,13 +76,13 @@ Controller 平均比 4 FPS Qwen 高 3.67 个百分点，比 4 FPS VideoJev 高 6
 
 先做一组每时长组各 25 题的 100 题实验，再各新增两组 100 题。同一个 seed 的三组问题互斥，合并后四组各 75 题。跨 seed 合计 900 题次，实际为 **671 道互异题、570 个视频**。
 
-| 方法 | seed42 | seed43 | seed44 | 平均准确率 | 样本方差 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6-35B-A3B | 73.33 | 73.33 | 73.33 | 73.33 | 0.0000 |
-| VideoJev-4B | 71.33 | 72.00 | 72.00 | 71.78 | 0.1481 |
-| Qwen3.6-35B-A3B + VideoJev-4B | 72.16 | 72.45 | 72.59 | 72.40 | 0.0489 |
-| Jev-as-Controller | 74.67 | 75.67 | 75.00 | **75.11** | 0.2593 |
-| Qwen3.6-35B-A3B or VideoJev-4B | 81.33 | 81.67 | 81.00 | 81.33 | 0.1111 |
+| 方法                           | seed42 | seed43 | seed44 |      平均准确率 | 样本方差 |
+| ------------------------------ | -----: | -----: | -----: | --------------: | -------: |
+| Qwen3.6-35B-A3B                |  73.33 |  73.33 |  73.33 |           73.33 |   0.0000 |
+| VideoJev-4B                    |  71.33 |  72.00 |  72.00 |           71.78 |   0.1481 |
+| Qwen3.6-35B-A3B + VideoJev-4B  |  72.16 |  72.45 |  72.59 |           72.40 |   0.0489 |
+| Jev-as-Controller              |  74.67 |  75.67 |  75.00 | **75.11** |   0.2593 |
+| Qwen3.6-35B-A3B or VideoJev-4B |  81.33 |  81.67 |  81.00 |           81.33 |   0.1111 |
 
 各 100 题组的完整表、未四舍五入的数值和来源 SHA 保存在 [结果摘要](docs/results/README.md) 与 [机器可读 JSON](docs/results/longvideobench_summary.json)。比例实验的三份题目 ID 见 [proportional_samples.json](docs/results/proportional_samples.json)。
 
@@ -116,10 +116,10 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 **35B 的 grouped-GEMM 后端是必需前置。** 本实现针对 RTX 4090/SM89 使用固定源码和 CUTLASS 补丁，拒绝静默回退到 Python 专家循环。可发布的源码、版本、许可证与构建步骤见 [runtime/qwen36](runtime/qwen36/README.md)。该说明从实际构建源整理；本次文档发布没有在新机器上重新编译，其他 GPU 架构需要单独验证。
 
-| 模型 | Hugging Face 仓库 | 本次 revision |
-| --- | --- | --- |
+| 模型            | Hugging Face 仓库                                                  | 本次 revision                                |
+| --------------- | ------------------------------------------------------------------ | -------------------------------------------- |
 | Qwen3.6-35B-A3B | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | `995ad96eacd98c81ed38be0c5b274b04031597b0` |
-| VideoJev-4B | [ZhuYuhan/VideoJev-4B](https://huggingface.co/ZhuYuhan/VideoJev-4B) | `1c1a253bf90dfa66176124d25a48ffb791d517d5` |
+| VideoJev-4B     | [ZhuYuhan/VideoJev-4B](https://huggingface.co/ZhuYuhan/VideoJev-4B) | `1c1a253bf90dfa66176124d25a48ffb791d517d5` |
 
 在已配置上述代理的 shell 下载固定版本：
 
@@ -285,15 +285,15 @@ python -m pytest -q \
 
 ## 代码导航与上游
 
-| 路径 | 内容 |
-| --- | --- |
-| `scripts/sample_longvideobench*.py` | 等量、比例及追加抽样 |
-| `scripts/eval_longvideobench_qwen36.py` | 六卡 BF16 Qwen 的首步候选字母打分 |
-| `scripts/eval_longvideobench_videojev.py` | VideoJev 候选概率 |
-| `scripts/eval_longvideobench_proportional_controller.py` | 比例样本的双源融合 |
-| `scripts/summarize_longvideobench_proportional.py` | 三 seed、随机选边和 OR 统计 |
-| `timejev/lvb_experiment.py` | 视频预处理、指纹、断点和计分 |
-| `runtime/qwen36/` | 固定 native 后端的小型源码与构建说明 |
-| `docs/results/` | 可公开的结果、样本 ID 与来源摘要 |
+| 路径                                                       | 内容                                 |
+| ---------------------------------------------------------- | ------------------------------------ |
+| `scripts/sample_longvideobench*.py`                      | 等量、比例及追加抽样                 |
+| `scripts/eval_longvideobench_qwen36.py`                  | 六卡 BF16 Qwen 的首步候选字母打分    |
+| `scripts/eval_longvideobench_videojev.py`                | VideoJev 候选概率                    |
+| `scripts/eval_longvideobench_proportional_controller.py` | 比例样本的双源融合                   |
+| `scripts/summarize_longvideobench_proportional.py`       | 三 seed、随机选边和 OR 统计          |
+| `timejev/lvb_experiment.py`                              | 视频预处理、指纹、断点和计分         |
+| `runtime/qwen36/`                                        | 固定 native 后端的小型源码与构建说明 |
+| `docs/results/`                                          | 可公开的结果、样本 ID 与来源摘要     |
 
 原 VideoJev 的训练、checkpoint 导出和完整 benchmark 接口仍见 [数据与训练](docs/DATA.md)、[评估说明](docs/EVALUATION.md)、[checkpoint 导出](docs/CHECKPOINTS.md) 及 [上游仓库](https://github.com/MCG-NJU/VideoJev)。模型和数据的使用同时遵守各自发布方的许可证；仓库代码许可证见 [LICENSE](LICENSE)。

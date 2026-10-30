@@ -131,11 +131,29 @@ def validate_loaded(model, expected_map, max_memory):
                 quantized=False, cpu_or_disk_offload=False, device_map=expected_map)
 
 
+def memory_budget(args, gpu_count):
+    """Resolve per-logical-GPU weight budgets in GiB."""
+    values = getattr(args, 'max_memory_gib_per_gpu', None)
+    if values is None:
+        scalar = getattr(args, 'max_memory_gib', None)
+        values = [18.5 if scalar is None else scalar] * gpu_count
+    elif isinstance(values, str):
+        try:
+            values = [float(value.strip()) for value in values.split(',') if value.strip()]
+        except ValueError as error:
+            raise ValueError('--max-memory-gib-per-gpu must be comma-separated numbers') from error
+    else:
+        values = list(values)
+    if len(values) != gpu_count or any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError(f'--max-memory-gib-per-gpu requires exactly {gpu_count} positive values')
+    return {gpu: int(value * 2**30) for gpu, value in enumerate(values)}
+
+
 def load_model(args, config, backend, model_class=None):
     from transformers import Qwen3_5MoeForConditionalGeneration
     model_class = model_class or Qwen3_5MoeForConditionalGeneration
     plan = device_plan(config, args.gpu_count)
-    max_memory = {gpu: int(args.max_memory_gib*2**30) for gpu in range(args.gpu_count)}
+    max_memory = memory_budget(args, args.gpu_count)
     model, loading = model_class.from_pretrained(
         args.checkpoint, config=config, local_files_only=True, dtype=torch.bfloat16,
         device_map=plan, max_memory=max_memory, attn_implementation='flash_attention_2',
@@ -162,17 +180,26 @@ def main(argv=None):
     from transformers import AutoConfig, AutoProcessor
     parser = evaluation_parser(__doc__, 'models/Qwen3.6-35B-A3B')
     parser.add_argument('--gpu-count', type=int, choices=(4, 5, 6), default=6)
-    parser.add_argument('--max-memory-gib', type=float, default=18.5, help='每卡模型权重预算；额外保留激活空间')
+    parser.add_argument('--max-memory-gib', type=float, default=None, help='每卡模型权重预算；额外保留激活空间，默认 18.5')
+    parser.add_argument('--max-memory-gib-per-gpu',
+                        help='按逻辑 GPU 0..N-1 指定预算，例如 18.0,18.5,18.5,18.5,18.5,18.0')
     args = parser.parse_args(argv)
-    if args.device not in ('cuda', 'cuda:0') or not math.isfinite(args.max_memory_gib) or args.max_memory_gib <= 0:
+    scalar_budget = 18.5 if args.max_memory_gib is None else args.max_memory_gib
+    if (args.device not in ('cuda', 'cuda:0') or not math.isfinite(scalar_budget)
+            or scalar_budget <= 0):
         raise ValueError('输入设备必须是逻辑 cuda:0，且每卡权重预算为有限正数；通过 CUDA_VISIBLE_DEVICES 选卡')
+    if args.max_memory_gib_per_gpu is not None and args.max_memory_gib is not None:
+        raise ValueError('使用 --max-memory-gib-per-gpu 时不要同时指定 --max-memory-gib')
     os.environ['HF_HUB_OFFLINE'] = os.environ['TRANSFORMERS_OFFLINE'] = '1'
     backend, provenance = load_backend()
     config = AutoConfig.from_pretrained(args.checkpoint, local_files_only=True)
     plan = device_plan(config, args.gpu_count)
+    budgets = memory_budget(args, args.gpu_count)
+    budget_gib = [budgets[gpu] / 2**30 for gpu in range(args.gpu_count)]
     settings = dict(prompt=ANSWER_INSTRUCTION, thinking=False, scoring='first_decode_bare_letter_candidates',
         probabilities='softmax_over_candidate_letters_only', decoding=dict(do_sample=False, max_new_tokens=1),
-        gpu_count=args.gpu_count, max_memory_gib=args.max_memory_gib, device_map=plan,
+        gpu_count=args.gpu_count, max_memory_gib=scalar_budget,
+        max_memory_gib_per_gpu=budget_gib, device_map=plan,
         dtype='bfloat16', quantized=False, backend=provenance, cache='dynamic_without_offload')
     run = Experiment(args, 'qwen36', settings)
     if len(run.done) == len(run.rows):

@@ -123,6 +123,34 @@ def test_loader_dispatch_and_no_quantization_or_offload(monkeypatch, collection)
     assert all(isinstance(value, collection) for value in diagnostics.values())
 
 
+def test_loader_accepts_per_gpu_memory_budgets(monkeypatch):
+    seen = {}
+
+    class Model:
+        def eval(self): return self
+        def requires_grad_(self, enabled): return self
+
+    class Loader:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            seen.update(kwargs)
+            return Model(), {key: [] for key in ('missing_keys', 'unexpected_keys', 'mismatched_keys', 'error_msgs')}
+
+    monkeypatch.setattr(evaluator, 'validate_loaded', lambda *_: {'checked': True})
+    monkeypatch.setattr(evaluator, 'install_backend', lambda *_: 40)
+    args = SimpleNamespace(checkpoint='local/official', gpu_count=4,
+                           max_memory_gib=18.5,
+                           max_memory_gib_per_gpu='17.0,18.0,19.0,20.0')
+    evaluator.load_model(args, config(), object(), model_class=Loader)
+    assert [round(value / 2**30, 1) for value in seen['max_memory'].values()] == [17.0, 18.0, 19.0, 20.0]
+
+
+def test_memory_budget_requires_one_value_per_gpu():
+    args = SimpleNamespace(max_memory_gib=18.5, max_memory_gib_per_gpu='18,19')
+    with pytest.raises(ValueError, match='exactly 4'):
+        evaluator.memory_budget(args, 4)
+
+
 @pytest.mark.parametrize('key', ['missing_keys', 'unexpected_keys', 'mismatched_keys', 'error_msgs'])
 def test_nonempty_loading_sets_are_rejected_before_audit(monkeypatch, key):
     diagnostics = {name: set() for name in ('missing_keys', 'unexpected_keys', 'mismatched_keys', 'error_msgs')}

@@ -118,7 +118,7 @@ python scripts/build_bench_manifest.py --bench lvbench \
 ## 4. 抽样和预算预检
 
 ```bash
-python scripts/sample_bench_subset.py --bench videomme --seed 42 --n 150 \
+python scripts/sample_bench_subset.py --bench videomme --seed 43 --n 150 \
   --out runs/screen/videomme/sample.jsonl
 python scripts/sample_bench_subset.py --bench mlvu --seed 42 --per-task 20 \
   --out runs/screen/mlvu/sample.jsonl
@@ -150,6 +150,8 @@ python scripts/sample_bench_subset.py --bench videomme --seed 42 --n 24 \
 
 以下正式命令按原实验 6 张 4090 放 Qwen、另 1 张放 VideoJev 演示。可依实际卡号改 `CUDA_VISIBLE_DEVICES`。顺序执行即可，不需要两模型并行。Qwen 入口支持 `--gpu-count 4/5/6`，尚未适配单张大显存 GPU 或其它架构后端。
 
+Qwen 默认用同一个 `--max-memory-gib` 作为每张逻辑 GPU 的权重预算；如果不同卡剩余显存不同，可改用 `--max-memory-gib-per-gpu`，值按 `CUDA_VISIBLE_DEVICES` 映射后的逻辑 `cuda:0..N-1` 顺序填写。例如六卡预算为 `18.0,18.5,18.5,18.5,18.5,18.0` 时，传入 `--max-memory-gib-per-gpu 18.0,18.5,18.5,18.5,18.5,18.0`，不要再同时传 `--max-memory-gib`。这只改变权重装载上限，不改变层到 GPU 的固定分配；每个值仍必须小于该卡物理显存，并给激活留出空间。
+
 ```bash
 source scripts/env_qwen36.sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -158,14 +160,14 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 BENCH=videomme
 M=runs/screen/$BENCH/sample.jsonl
 
-CUDA_VISIBLE_DEVICES=7 python scripts/eval_bench_videojev.py \
-  --manifest "$M" --out "runs/screen/$BENCH/videojev" --checkpoint models/VideoJev-4B \
-  --seed 42 --device cuda:0 --fps 2 --max-frames 2048 \
+CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
+  --manifest "$M" --out "runs/screen/$BENCH/videojev_4fps" --checkpoint models/VideoJev-4B \
+  --seed 42 --device cuda:0 --fps 4 --max-frames 4096 \
   --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,6 python scripts/eval_bench_qwen36.py \
+CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
   --manifest "$M" --out "runs/screen/$BENCH/qwen" --checkpoint models/Qwen3.6-35B-A3B \
-  --seed 42 --device cuda:0 --gpu-count 6 --max-memory-gib 18.5 \
+  --seed 42 --device cuda:0 --gpu-count 5 --max-memory-gib 25.5 \
   --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 ```
 
