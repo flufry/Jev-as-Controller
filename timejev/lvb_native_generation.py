@@ -195,9 +195,10 @@ def score_generated(rows, by_id):
 
 
 class NativeExperiment:
-    def __init__(self, args, settings, tokenizer=None):
+    def __init__(self, args, settings, tokenizer=None, *, rows=None, code_paths=None,
+                 method='qwen36_native_instruct', sample_seed=None):
         self.tokenizer = tokenizer
-        rows = load_sample(args.manifest)
+        rows = load_sample(args.manifest) if rows is None else rows
         self.rows = rows[:args.limit] if getattr(args, 'limit', None) else rows
         self.out = Path(args.out).resolve()
         self.predictions_path = self.out/'predictions.jsonl'
@@ -206,7 +207,7 @@ class NativeExperiment:
             raise FileExistsError(f'拒绝覆盖已有输出：{self.out}')
         if getattr(args, 'resume', False) and not meta_path.is_file():
             raise ValueError('恢复需要已有完整run.json元数据')
-        code = [Path(__file__), ROOT/'scripts/eval_longvideobench_qwen36_native.py',
+        code = code_paths or [Path(__file__), ROOT/'scripts/eval_longvideobench_qwen36_native.py',
             ROOT/'scripts/eval_longvideobench_qwen36.py', ROOT/'scripts/eval_longvideobench_qwen.py',
             ROOT/'timejev/lvb_experiment.py', ROOT/'timejev/rgb_media.py', ROOT/'timejev/video.py']
         media = {}
@@ -221,19 +222,21 @@ class NativeExperiment:
                 packages[name] = version(name)
             except PackageNotFoundError:
                 packages[name] = None
-        identity = dict(method='qwen36_native_instruct', manifest_sha256=sha256(args.manifest),
+        identity = dict(method=method, manifest_sha256=sha256(args.manifest),
             checkpoint=checkpoint_identity(args.checkpoint), protocol=protocol(args), settings=settings,
-            inference_seed=args.seed, seed_rule=SEED_RULE, sample_seed=getattr(args, 'sample_seed', 42),
+            inference_seed=args.seed, seed_rule=SEED_RULE,
             limit=getattr(args, 'limit', None), selected_ids=[row['id'] for row in self.rows],
             media=media, packages=packages,
             code_sha256={str(path.relative_to(ROOT)): sha256(path) for path in code})
+        if sample_seed is not None:
+            identity['sample_seed'] = sample_seed
         if meta_path.exists():
             self.metadata = json.loads(meta_path.read_text())
             if self.metadata['identity'] != identity:
                 raise ValueError('恢复指纹不匹配，不能复用其他题集、模型、设置或源码')
         else:
             self.out.mkdir(parents=True)
-            self.metadata = dict(schema='longvideobench_native_generation_run_v1', identity=identity,
+            self.metadata = dict(schema='native_generation_run_v1', identity=identity,
                 status='running',
                 manifest=str(Path(args.manifest).resolve()), command=[sys.executable, *sys.argv],
                 started_at=datetime.now(timezone.utc).isoformat(), hostname=socket.gethostname(), pid=os.getpid(),

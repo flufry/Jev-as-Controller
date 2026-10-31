@@ -166,7 +166,16 @@ CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
   --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
 CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
-  --manifest "$M" --out "runs/screen/$BENCH/qwen" --checkpoint models/Qwen3.6-35B-A3B \
+  --manifest "$M" --out "runs/screen/$BENCH/qwen_native" --checkpoint models/Qwen3.6-35B-A3B \
+  --seed 42 --device cuda:0 --gpu-count 5 --max-memory-gib 25.5 \
+  --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
+```
+
+此入口完整生成回答并解析最终选项；无效、歧义或截断回答计错。原生文本回答不包含 Controller 融合所需的候选 logits。需要 Controller 时，另外运行旧候选评分入口作为专用融合输入：
+
+```bash
+CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
+  --manifest "$M" --out "runs/screen/$BENCH/qwen_logits" --checkpoint models/Qwen3.6-35B-A3B \
   --seed 42 --device cuda:0 --gpu-count 5 --max-memory-gib 25.5 \
   --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 ```
@@ -184,11 +193,11 @@ BENCH=videomme
 M=runs/screen/$BENCH/sample.jsonl
 
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen" --videojev "runs/screen/$BENCH/videojev" \
+  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev" \
   --out "runs/screen/$BENCH/controller" --beta 2 --qwen-method qwen36
 
 python scripts/summarize_bench.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen" --videojev "runs/screen/$BENCH/videojev" \
+  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev" \
   --controller "runs/screen/$BENCH/controller" --out "runs/screen/$BENCH/summary" \
   --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 42
 

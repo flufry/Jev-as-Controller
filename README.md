@@ -337,6 +337,8 @@ python -m pytest -q \
 | `scripts/sample_longvideobench*.py` | 等量、比例及追加抽样 |
 | `scripts/eval_longvideobench_qwen36.py` | Qwen 首步候选字母打分（历史基线） |
 | `scripts/eval_longvideobench_qwen36_native.py` | 当前 Qwen 基线：完整 Instruct 生成后解析 |
+| `scripts/eval_bench_qwen36.py` | 跨 bench Qwen 完整生成并解析选项 |
+| `scripts/eval_bench_qwen36_logits.py` | Controller 专用 Qwen 候选 logits 来源 |
 | `scripts/eval_longvideobench_videojev.py` | VideoJev 候选概率 |
 | `scripts/eval_longvideobench_proportional_controller.py` | 比例样本的双源融合 |
 | `scripts/sample_longvideobench_fixed_questions.py` | 固定题集的候选概率重复采样 |
