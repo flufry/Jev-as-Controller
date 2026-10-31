@@ -1,0 +1,380 @@
+{
+  "schema": "jev_as_controller_fixed_seed42_candidate_sampling_summary_v1",
+  "split": "LongVideoBench validation_subset",
+  "sample_seed": 42,
+  "n": 100,
+  "inference_seeds": [
+    42,
+    43,
+    44
+  ],
+  "repetitions": 3,
+  "temperature": 1.0,
+  "top_k": null,
+  "top_p": null,
+  "probability_scope": "original_question_candidates",
+  "rng": "每方法/每次重复使用 random.Random(f'{inference_seed}:{method}')；按固定题集的原始顺序，每题恰好消耗一次 random()，使用归一化概率的累积分布采样。",
+  "probability_normalization": "逐题除以源概率总和；逐题输出保留源概率，理论统计使用同一归一化分布。",
+  "variance_scope": "fixed_questions_answer_sampling",
+  "sample_variance_ddof": 1,
+  "accuracy_unit": "fraction",
+  "displayed_variance_unit": "percentage_points_squared",
+  "sample_sha256": "b4890d7a63295625957fe2bc13400c3964861e05512b2988e63f229d8d5093b5",
+  "sample_ids_reference": "proportional_samples.json: samples.42",
+  "protocols": {
+    "baseline": {
+      "name": "lvb_equal_duration_rgb_subset_v1",
+      "fps": 4.0,
+      "max_frames": 4096,
+      "context": 262144,
+      "visual_token_budget": 24576,
+      "geometry": "largest_native_grid_under_budget_max_area_409600",
+      "frame_sampling": "uniform_full_video",
+      "input_source": "raw_video",
+      "use_subtitles": false,
+      "use_audio": false
+    },
+    "controller": {
+      "name": "lvb_equal_duration_rgb_subset_v1",
+      "fps": 2.0,
+      "max_frames": 2048,
+      "context": 262144,
+      "visual_token_budget": 24576,
+      "geometry": "largest_native_grid_under_budget_max_area_409600",
+      "frame_sampling": "uniform_full_video",
+      "input_source": "raw_video",
+      "use_subtitles": false,
+      "use_audio": false
+    }
+  },
+  "beta": 2,
+  "methods": {
+    "qwen36": {
+      "accuracies": [
+        0.61,
+        0.66,
+        0.66
+      ],
+      "mean_accuracy": 0.6433333333333333,
+      "sample_variance_fraction_squared": 0.0008333333333333348,
+      "sample_variance_percentage_points_squared": 8.333333333333348,
+      "theoretical_mean_accuracy": 0.6041115239379165,
+      "theoretical_variance_percentage_points_squared": 9.889157578961193,
+      "greedy_accuracy": 0.67
+    },
+    "videojev": {
+      "accuracies": [
+        0.61,
+        0.57,
+        0.62
+      ],
+      "mean_accuracy": 0.6,
+      "sample_variance_fraction_squared": 0.0007000000000000013,
+      "sample_variance_percentage_points_squared": 7.000000000000013,
+      "theoretical_mean_accuracy": 0.5782660194233594,
+      "theoretical_variance_percentage_points_squared": 10.669478407630644,
+      "greedy_accuracy": 0.64
+    },
+    "jev_as_controller": {
+      "accuracies": [
+        0.65,
+        0.68,
+        0.63
+      ],
+      "mean_accuracy": 0.6533333333333333,
+      "sample_variance_fraction_squared": 0.0006333333333333345,
+      "sample_variance_percentage_points_squared": 6.333333333333345,
+      "theoretical_mean_accuracy": 0.6536756629169241,
+      "theoretical_variance_percentage_points_squared": 7.275362547116269,
+      "greedy_accuracy": 0.67
+    }
+  },
+  "trials": [
+    {
+      "method": "qwen36",
+      "inference_seed": 42,
+      "n": 100,
+      "correct": 61,
+      "accuracy": 0.61,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 19,
+          "accuracy": 0.6129032258064516
+        },
+        "60": {
+          "n": 13,
+          "correct": 9,
+          "accuracy": 0.6923076923076923
+        },
+        "15": {
+          "n": 14,
+          "correct": 13,
+          "accuracy": 0.9285714285714286
+        },
+        "3600": {
+          "n": 42,
+          "correct": 20,
+          "accuracy": 0.47619047619047616
+        }
+      }
+    },
+    {
+      "method": "qwen36",
+      "inference_seed": 43,
+      "n": 100,
+      "correct": 66,
+      "accuracy": 0.66,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 20,
+          "accuracy": 0.6451612903225806
+        },
+        "60": {
+          "n": 13,
+          "correct": 10,
+          "accuracy": 0.7692307692307693
+        },
+        "15": {
+          "n": 14,
+          "correct": 12,
+          "accuracy": 0.8571428571428571
+        },
+        "3600": {
+          "n": 42,
+          "correct": 24,
+          "accuracy": 0.5714285714285714
+        }
+      }
+    },
+    {
+      "method": "qwen36",
+      "inference_seed": 44,
+      "n": 100,
+      "correct": 66,
+      "accuracy": 0.66,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 20,
+          "accuracy": 0.6451612903225806
+        },
+        "60": {
+          "n": 13,
+          "correct": 10,
+          "accuracy": 0.7692307692307693
+        },
+        "15": {
+          "n": 14,
+          "correct": 14,
+          "accuracy": 1.0
+        },
+        "3600": {
+          "n": 42,
+          "correct": 22,
+          "accuracy": 0.5238095238095238
+        }
+      }
+    },
+    {
+      "method": "videojev",
+      "inference_seed": 42,
+      "n": 100,
+      "correct": 61,
+      "accuracy": 0.61,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 17,
+          "accuracy": 0.5483870967741935
+        },
+        "60": {
+          "n": 13,
+          "correct": 8,
+          "accuracy": 0.6153846153846154
+        },
+        "15": {
+          "n": 14,
+          "correct": 14,
+          "accuracy": 1.0
+        },
+        "3600": {
+          "n": 42,
+          "correct": 22,
+          "accuracy": 0.5238095238095238
+        }
+      }
+    },
+    {
+      "method": "videojev",
+      "inference_seed": 43,
+      "n": 100,
+      "correct": 57,
+      "accuracy": 0.57,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 12,
+          "accuracy": 0.3870967741935484
+        },
+        "60": {
+          "n": 13,
+          "correct": 8,
+          "accuracy": 0.6153846153846154
+        },
+        "15": {
+          "n": 14,
+          "correct": 13,
+          "accuracy": 0.9285714285714286
+        },
+        "3600": {
+          "n": 42,
+          "correct": 24,
+          "accuracy": 0.5714285714285714
+        }
+      }
+    },
+    {
+      "method": "videojev",
+      "inference_seed": 44,
+      "n": 100,
+      "correct": 62,
+      "accuracy": 0.62,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 18,
+          "accuracy": 0.5806451612903226
+        },
+        "60": {
+          "n": 13,
+          "correct": 8,
+          "accuracy": 0.6153846153846154
+        },
+        "15": {
+          "n": 14,
+          "correct": 12,
+          "accuracy": 0.8571428571428571
+        },
+        "3600": {
+          "n": 42,
+          "correct": 24,
+          "accuracy": 0.5714285714285714
+        }
+      }
+    },
+    {
+      "method": "jev_as_controller",
+      "inference_seed": 42,
+      "n": 100,
+      "correct": 65,
+      "accuracy": 0.65,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 21,
+          "accuracy": 0.6774193548387096
+        },
+        "60": {
+          "n": 13,
+          "correct": 7,
+          "accuracy": 0.5384615384615384
+        },
+        "15": {
+          "n": 14,
+          "correct": 14,
+          "accuracy": 1.0
+        },
+        "3600": {
+          "n": 42,
+          "correct": 23,
+          "accuracy": 0.5476190476190477
+        }
+      }
+    },
+    {
+      "method": "jev_as_controller",
+      "inference_seed": 43,
+      "n": 100,
+      "correct": 68,
+      "accuracy": 0.68,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 24,
+          "accuracy": 0.7741935483870968
+        },
+        "60": {
+          "n": 13,
+          "correct": 8,
+          "accuracy": 0.6153846153846154
+        },
+        "15": {
+          "n": 14,
+          "correct": 14,
+          "accuracy": 1.0
+        },
+        "3600": {
+          "n": 42,
+          "correct": 22,
+          "accuracy": 0.5238095238095238
+        }
+      }
+    },
+    {
+      "method": "jev_as_controller",
+      "inference_seed": 44,
+      "n": 100,
+      "correct": 63,
+      "accuracy": 0.63,
+      "by_duration_group": {
+        "600": {
+          "n": 31,
+          "correct": 19,
+          "accuracy": 0.6129032258064516
+        },
+        "60": {
+          "n": 13,
+          "correct": 8,
+          "accuracy": 0.6153846153846154
+        },
+        "15": {
+          "n": 14,
+          "correct": 13,
+          "accuracy": 0.9285714285714286
+        },
+        "3600": {
+          "n": 42,
+          "correct": 23,
+          "accuracy": 0.5476190476190477
+        }
+      }
+    }
+  ],
+  "native_qwen_baseline": {
+    "status": "not_started",
+    "as_of": "2026-10-31",
+    "result_available": false,
+    "note": "本文件的Qwen结果来自首步候选概率采样；原生Instruct生成基线已实现，最近一次预检显存不足，尚无GPU结果。"
+  },
+  "source": {
+    "results.json": {
+      "path": "runs/lvb100_proportional_seed42_fixed_questions_sampling3_T1/results.json",
+      "sha256": "7bb32d8f271b6c38c8d3279e95e1f5bdfcd7aaae18ddbcde720f23efa5f90a87"
+    },
+    "trials.jsonl": {
+      "path": "runs/lvb100_proportional_seed42_fixed_questions_sampling3_T1/trials.jsonl",
+      "sha256": "affca9af2842b80db854a1c49efb7ecc65c5aa377065a74aa161b70e67f3cb5c"
+    },
+    "predictions.jsonl": {
+      "path": "runs/lvb100_proportional_seed42_fixed_questions_sampling3_T1/predictions.jsonl",
+      "sha256": "4c4a4cd314ea9af31b3858ab8e1be8ece49d06c50526d2431d4f08191ac0379d"
+    },
+    "artifact_manifest.json": {
+      "path": "runs/lvb100_proportional_seed42_fixed_questions_sampling3_T1/artifact_manifest.json",
+      "sha256": "7cc42d5568c948a407fe3323920ffeefaae04eeb79086066584878974a5254b4"
+    }
+  },
+  "note": "固定同一100题，仅随机抽取候选答案；全部900条记录已在本机独立回放。完整runs产物不随Git分发。"
+}

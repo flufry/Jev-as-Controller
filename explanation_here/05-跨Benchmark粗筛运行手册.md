@@ -158,11 +158,11 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 # 依次将 BENCH 改为 videomme / mlvu / lvbench；首次可先使用 pilot 的路径。
 BENCH=videomme
-M=runs/screen/$BENCH/sample.jsonl
+M=runs/screen/$BENCH/sample_43.jsonl
 
 CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
-  --manifest "$M" --out "runs/screen/$BENCH/videojev_4fps" --checkpoint models/VideoJev-4B \
-  --seed 42 --device cuda:0 --fps 4 --max-frames 4096 \
+  --manifest "$M" --out "runs/screen/$BENCH/videojev_43" --checkpoint models/VideoJev-4B \
+  --seed 43 --device cuda:0 --fps 2 --max-frames 2048 \
   --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
 CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
