@@ -13,7 +13,9 @@ import torch
 
 from scripts.bench_io import load_rows
 from scripts.eval_longvideobench_qwen import ANSWER_INSTRUCTION, text_inputs
-from scripts.eval_longvideobench_qwen36 import device_plan, load_backend, load_model, synchronize
+from scripts.eval_longvideobench_qwen36 import (
+    device_plan, load_backend, load_model, memory_budget, synchronize,
+)
 from scripts.eval_longvideobench_qwen36_native import (
     PresencePenalty, generation_parameters,
 )
@@ -28,13 +30,20 @@ def main(argv=None):
     parser = evaluation_parser(__doc__, 'models/Qwen3.6-35B-A3B')
     parser.set_defaults(fps=2., max_frames=2048)
     parser.add_argument('--gpu-count', type=int, choices=(4, 5, 6), default=6)
-    parser.add_argument('--max-memory-gib', type=float, default=18.5)
+    parser.add_argument('--max-memory-gib', type=float, default=None)
+    parser.add_argument('--max-memory-gib-per-gpu',
+        help='按逻辑 GPU 0..N-1 指定预算，例如 40,20,40,40；使用时不要同时指定 --max-memory-gib')
     parser.add_argument('--max-new-tokens', type=int, default=32768)
     parser.add_argument('--limit', type=int, help='仅用于独立 smoke 输出目录')
     args = parser.parse_args(argv)
-    if (args.device not in ('cuda', 'cuda:0') or not math.isfinite(args.max_memory_gib)
-            or args.max_memory_gib <= 0 or args.limit is not None and args.limit < 1):
+    scalar_budget = 18.5 if args.max_memory_gib is None else args.max_memory_gib
+    if (args.device not in ('cuda', 'cuda:0') or not math.isfinite(scalar_budget)
+            or scalar_budget <= 0 or args.limit is not None and args.limit < 1):
         raise ValueError('输入设备、每卡权重预算或 limit 无效')
+    if args.max_memory_gib_per_gpu is not None and args.max_memory_gib is not None:
+        raise ValueError('使用 --max-memory-gib-per-gpu 时不要同时指定 --max-memory-gib')
+    budgets = memory_budget(args, args.gpu_count)
+    budget_gib = [budgets[gpu] / 2**30 for gpu in range(args.gpu_count)]
 
     rows = load_rows(args.manifest)
     meta_path = Path(args.manifest).with_suffix('.meta.json')
@@ -65,7 +74,8 @@ def main(argv=None):
         scoring='native_generation_then_option_parsing', decoding=parameters,
         presence_penalty=1.5, presence_penalty_scope='generated_tokens_only_unique',
         presence_penalty_order='before_temperature_top_k_top_p', seed_rule=SEED_RULE,
-        gpu_count=args.gpu_count, max_memory_gib=args.max_memory_gib, device_map=plan,
+        gpu_count=args.gpu_count, max_memory_gib=scalar_budget,
+        max_memory_gib_per_gpu=budget_gib, device_map=plan,
         dtype='bfloat16', quantized=False, cache='dynamic_without_offload',
         invalid_answers='count_as_incorrect', parser='deterministic_no_ground_truth_or_text_only_extractor',
         note=PROTOCOL_NOTE)
