@@ -139,6 +139,46 @@ def test_score_counts_invalid_answers_in_denominator(generated):
     assert metrics['by_duration_group']['3600']['accuracy'] == 0
 
 
+@pytest.mark.parametrize('benchmark', ['videomme', 'lvbench'])
+def test_native_screening_metrics_use_actual_benchmark_and_strata(generated, benchmark):
+    rows, predictions = generated
+    for row, group in zip(rows, ('short', 'medium', 'long')):
+        row.update(benchmark=benchmark, stratum=group, question_type=['reasoning'])
+    metrics = score_generated(rows, predictions, benchmark=benchmark)
+    assert metrics['benchmark'] == benchmark
+    assert metrics['split'] == 'screening_subset'
+    assert metrics['primary_metric'] == 'accuracy'
+    assert metrics['correct'] == 1 and metrics['invalid'] == 1
+    assert metrics['accuracy'] == pytest.approx(1/3)
+    assert metrics['by_stratum']['long']['accuracy'] == 0
+    assert metrics['by_question_type']['reasoning']['n'] == 3
+    assert 'by_duration_group' not in metrics
+    with pytest.raises(ValueError, match='benchmark'):
+        score_generated(rows, predictions, benchmark='mlvu')
+
+
+def test_native_mlvu_metrics_use_macro_average_and_count_invalid(generated):
+    from timejev.mlvu_benchmark import TASK_COUNTS
+
+    source_rows, source_predictions = generated
+    rows, predictions = [], {}
+    for task in TASK_COUNTS:
+        for i in range(2 if task == 'plotQA' else 1):
+            template = 0 if task == 'plotQA' else 2
+            qid = f'mlvu/{task}/{i}'
+            row = dict(source_rows[template], id=qid, benchmark='mlvu', stratum=task)
+            rows.append(row)
+            predictions[qid] = dict(source_predictions[f'q{template}'], id=qid)
+    metrics = score_generated(rows, predictions, benchmark='mlvu')
+    assert metrics['primary_metric'] == 'm_avg'
+    assert metrics['accuracy'] == .25
+    assert metrics['m_avg'] == pytest.approx(1/7)
+    assert metrics['invalid'] == 6
+    assert set(metrics['by_task']) == set(TASK_COUNTS)
+    with pytest.raises(ValueError, match='seven'):
+        score_generated(rows[:-1], {r['id']: predictions[r['id']] for r in rows[:-1]}, benchmark='mlvu')
+
+
 def test_labels_only_affect_scoring(generated):
     rows, by_id = generated
     changed = copy.deepcopy(rows)
@@ -211,7 +251,38 @@ def test_native_run_persists_and_resumes_real_sampled_answers(native_run):
     assert len(read_generated(resumed.predictions_path, resumed.rows)) == 3
     saved = json.loads((resumed.out/'run.json').read_text())
     assert saved['status'] == 'completed'
+    assert saved['schema'] == 'longvideobench_native_generation_run_v1'
+    assert saved['identity']['sample_seed'] == 42
+    assert saved['identity']['protocol']['name'] == 'lvb_equal_duration_rgb_subset_v1'
+    assert metrics['split'] == 'validation_subset'
+    assert 'benchmark' not in metrics
     assert saved['identity']['selected_ids'] == ['q0', 'q1', 'q2']
+
+
+def test_native_screening_resume_checks_protocol_and_dataset(native_run):
+    from pathlib import Path
+    from timejev.lvb_experiment import protocol
+
+    args, settings, rows = native_run
+    for row in rows:
+        row.update(benchmark='videomme', stratum='short',
+            video_path=str(Path(args.manifest).parent/'video.mp4'))
+    kwargs = dict(rows=rows, benchmark='videomme', sample_seed=42,
+        input_protocol=dict(protocol(args), name='video_bench_screen_rgb_v1'))
+    run = NativeExperiment(args, settings, **kwargs)
+    run.append_response(rows[0], 'A', [32, 248046])
+    args.resume = True
+    resumed = NativeExperiment(args, settings, **kwargs)
+    assert resumed.done == {'q0'}
+    kwargs['input_protocol'] = dict(kwargs['input_protocol'], fps=2.)
+    with pytest.raises(ValueError, match='指纹'):
+        NativeExperiment(args, settings, **kwargs)
+    kwargs['input_protocol'] = protocol(args)
+    with pytest.raises(ValueError, match='粗筛输入协议'):
+        NativeExperiment(args, settings, **kwargs)
+    kwargs['benchmark'] = 'lvbench'
+    with pytest.raises(ValueError, match='benchmark'):
+        NativeExperiment(args, settings, **kwargs)
 
 
 @pytest.mark.parametrize('field', ['seed', 'max_new_tokens', 'limit', 'video_content'])
@@ -242,12 +313,24 @@ def test_read_generated_rejects_duplicate_answers(native_run):
         read_generated(run.predictions_path, run.rows, complete=False)
 
 
-def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_run, monkeypatch):
+@pytest.mark.parametrize('cross_bench', [False, True])
+def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_run, monkeypatch, cross_bench):
     from pathlib import Path
     import transformers
-    from scripts import eval_longvideobench_qwen36_native as evaluator
+    if cross_bench:
+        from scripts import eval_bench_qwen36_native as evaluator
+    else:
+        from scripts import eval_longvideobench_qwen36_native as evaluator
 
     args, _, rows = native_run
+    if cross_bench:
+        from scripts.bench_io import jsonl_bytes, sha256
+        for row, group in zip(rows, ('short', 'medium', 'long')):
+            row.update(benchmark='videomme', stratum=group)
+        Path(args.manifest).write_bytes(jsonl_bytes(rows))
+        Path(args.manifest).with_suffix('.meta.json').write_text(json.dumps(dict(
+            schema='bench_subset_v1', seed=42, sample_sha256=sha256(args.manifest),
+            n=3, selected_ids=[r['id'] for r in rows], quotas=dict(short=1, medium=1, long=1))))
     checkpoint = Path(args.checkpoint)
     checkpoint.mkdir()
     for name in ('config.json', 'generation_config.json', 'tokenizer.json', 'preprocessor_config.json'):
@@ -281,7 +364,8 @@ def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_r
             calls.append(kwargs)
             return SimpleNamespace(sequences=torch.tensor([[9, 10, 999, 33, 248046]]))
 
-    monkeypatch.setattr(evaluator, 'read_sample', lambda *a, **kw: (rows, {'seed': 42}))
+    if not cross_bench:
+        monkeypatch.setattr(evaluator, 'read_sample', lambda *a, **kw: (rows, {'seed': 42}))
     monkeypatch.setattr(evaluator, 'load_backend', lambda: (object(), {'mock': True}))
     monkeypatch.setattr(evaluator, 'load_model', lambda *a: (Model(), {'mock': True}))
     monkeypatch.setattr(evaluator, 'prepare_record', lambda *a, **kw: {'mock': True})
@@ -309,3 +393,16 @@ def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_r
     assert all(row['answer_index'] == 1 and row['valid'] for row in saved)
     assert all(row['generated_token_ids'] == [999, 33, 248046] for row in saved)
     assert all('candidate_logits' not in row for row in saved)
+    if cross_bench:
+        metadata = json.loads((Path(args.out)/'run.json').read_text())
+        persisted_metrics = json.loads((Path(args.out)/'metrics.json').read_text())
+        assert persisted_metrics == metrics
+        assert metadata['schema'] == 'video_bench_native_generation_run_v1'
+        assert metadata['identity']['benchmark'] == metadata['benchmark'] == metrics['benchmark'] == 'videomme'
+        assert metadata['split'] == metrics['split'] == 'screening_subset'
+        assert metadata['identity']['sample_seed'] == 42
+        assert metadata['identity']['protocol'] == metrics['protocol']
+        assert metrics['protocol']['name'] == 'video_bench_screen_rgb_v1'
+        assert set(metrics['by_stratum']) == {'short', 'medium', 'long'}
+        assert all(row['benchmark'] == 'videomme' for row in saved)
+        assert [row['stratum'] for row in saved] == ['short', 'medium', 'long']

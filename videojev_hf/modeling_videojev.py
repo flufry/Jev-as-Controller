@@ -165,16 +165,21 @@ class VideoJevForVideoUnderstanding(PreTrainedModel):
         return VideoJevOutput(logits=logits, probabilities=probabilities, score_mask=mask)
 
     @torch.inference_mode()
-    def predict_video(self, processor, video, questions, *, fps=2., max_frames=2048, context=262144, threshold=None):
+    def predict_video(self, processor, video, questions, *, fps=2., max_frames=2048, context=262144,
+                      threshold=None, return_logits=False):
         """Return ordered QA answers / grounding intervals from an original video file."""
         if threshold is not None and not 0 < threshold < 1:
             raise ValueError('threshold must be between 0 and 1')
         pixels, record = prepare_video(processor, video, fps=fps, max_frames=max_frames, context=context)
         features = self.encode_video(pixels, torch.tensor([record['grid_thw']]))
-        return self.predict_features(processor, features, record, questions, context=context, threshold=threshold)
+        kwargs = dict(context=context, threshold=threshold)
+        if return_logits:
+            kwargs['return_logits'] = True
+        return self.predict_features(processor, features, record, questions, **kwargs)
 
     @torch.inference_mode()
-    def predict_features(self, processor, features, record, questions, *, context=262144, threshold=None):
+    def predict_features(self, processor, features, record, questions, *, context=262144,
+                         threshold=None, return_logits=False):
         """Use the configured grounding threshold unless this call overrides it."""
         decoder = dict(self.config.decoder)
         if threshold is not None:
@@ -184,5 +189,5 @@ class VideoJevForVideoUnderstanding(PreTrainedModel):
         results = []
         for batch, rows in prepare_query_groups(processor, record, questions, context):
             output = self(**batch, visual_features=features)
-            results.extend(format_predictions(output, rows, record, decoder))
+            results.extend(format_predictions(output, rows, record, decoder, return_logits=return_logits))
         return results

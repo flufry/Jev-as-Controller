@@ -175,30 +175,62 @@ def read_generated(path, rows, complete=True, tokenizer=None):
     return predictions
 
 
-def score_generated(rows, by_id):
+def score_generated(rows, by_id, *, benchmark=None):
     if not rows or len({row['id'] for row in rows}) != len(rows) or set(by_id) != {row['id'] for row in rows}:
         raise ValueError('计分需要非空互异题集及完整预测')
+    if benchmark is not None and (benchmark not in ('videomme', 'mlvu', 'lvbench')
+            or any(row.get('benchmark') != benchmark for row in rows)):
+        raise ValueError('benchmark必须与全部题目的数据集一致')
     totals, hits, invalid = Counter(), Counter(), 0
+    category_n, category_hits = Counter(), Counter()
     for row in rows:
         if type(row.get('answer_index')) is not int or not 0 <= row['answer_index'] < len(row['options']):
             raise ValueError(f'真实标签超出选项范围：{row["id"]}')
         prediction = by_id[row['id']]
         validate_generated(row, prediction)
-        group = str(row['duration_group'])
+        group = str(row['duration_group'] if benchmark is None else row['stratum'])
+        hit = prediction['valid'] and prediction['answer_index'] == row['answer_index']
         totals[group] += 1
-        hits[group] += prediction['valid'] and prediction['answer_index'] == row['answer_index']
+        hits[group] += hit
         invalid += not prediction['valid']
+        if benchmark is not None:
+            for category in row.get('question_type', []):
+                category_n[category] += 1
+                category_hits[category] += hit
     correct = sum(hits.values())
-    return dict(n=len(rows), videos=len({row['video_key'] for row in rows}), correct=correct,
-        invalid=invalid, accuracy=correct/len(rows), split='validation_subset',
-        by_duration_group={g: dict(n=totals[g], correct=hits[g], accuracy=hits[g]/totals[g]) for g in totals})
+    metrics = dict(n=len(rows), videos=len({row['video_key'] for row in rows}), correct=correct,
+        invalid=invalid, accuracy=correct/len(rows))
+    groups = {g: dict(n=totals[g], correct=hits[g], accuracy=hits[g]/totals[g]) for g in sorted(totals)}
+    if benchmark is None:
+        return dict(metrics, split='validation_subset', by_duration_group=groups)
+    metrics.update(benchmark=benchmark, split='screening_subset', primary_metric='accuracy',
+        by_stratum=groups, training_overlap_verified=False)
+    if benchmark == 'mlvu':
+        from .mlvu_benchmark import TASK_COUNTS
+        if set(totals) != set(TASK_COUNTS):
+            raise ValueError('M-Avg requires all seven MLVU tasks in the sample')
+        metrics.update(primary_metric='m_avg', m_avg=sum(g['accuracy'] for g in groups.values())/7,
+            by_task=groups)
+    if category_n:
+        metrics['by_question_type'] = {g: dict(n=category_n[g], correct=category_hits[g],
+            accuracy=category_hits[g]/category_n[g]) for g in sorted(category_n)}
+    return metrics
 
 
 class NativeExperiment:
     def __init__(self, args, settings, tokenizer=None, *, rows=None, code_paths=None,
-                 method='qwen36_native_instruct', sample_seed=None):
+                 method='qwen36_native_instruct', sample_seed=None, input_protocol=None, benchmark=None):
         self.tokenizer = tokenizer
+        self.benchmark = benchmark
+        if rows is None and sample_seed is None:
+            sample_seed = getattr(args, 'sample_seed', 42)
         rows = load_sample(args.manifest) if rows is None else rows
+        if benchmark is not None and (benchmark not in ('videomme', 'mlvu', 'lvbench')
+                or not rows or any(row.get('benchmark') != benchmark for row in rows)):
+            raise ValueError('benchmark必须与全部题目的数据集一致')
+        if benchmark is not None and (input_protocol is None
+                or input_protocol.get('name') != 'video_bench_screen_rgb_v1'):
+            raise ValueError('跨bench原生生成必须显式指定粗筛输入协议')
         self.rows = rows[:args.limit] if getattr(args, 'limit', None) else rows
         self.out = Path(args.out).resolve()
         self.predictions_path = self.out/'predictions.jsonl'
@@ -223,26 +255,33 @@ class NativeExperiment:
             except PackageNotFoundError:
                 packages[name] = None
         identity = dict(method=method, manifest_sha256=sha256(args.manifest),
-            checkpoint=checkpoint_identity(args.checkpoint), protocol=protocol(args), settings=settings,
+            checkpoint=checkpoint_identity(args.checkpoint),
+            protocol=protocol(args) if input_protocol is None else input_protocol, settings=settings,
             inference_seed=args.seed, seed_rule=SEED_RULE,
             limit=getattr(args, 'limit', None), selected_ids=[row['id'] for row in self.rows],
             media=media, packages=packages,
             code_sha256={str(path.relative_to(ROOT)): sha256(path) for path in code})
         if sample_seed is not None:
             identity['sample_seed'] = sample_seed
+        if benchmark is not None:
+            identity['benchmark'] = benchmark
         if meta_path.exists():
             self.metadata = json.loads(meta_path.read_text())
             if self.metadata['identity'] != identity:
                 raise ValueError('恢复指纹不匹配，不能复用其他题集、模型、设置或源码')
         else:
             self.out.mkdir(parents=True)
-            self.metadata = dict(schema='native_generation_run_v1', identity=identity,
+            self.metadata = dict(schema=('longvideobench_native_generation_run_v1' if benchmark is None
+                else 'video_bench_native_generation_run_v1'), identity=identity,
                 status='running',
                 manifest=str(Path(args.manifest).resolve()), command=[sys.executable, *sys.argv],
                 started_at=datetime.now(timezone.utc).isoformat(), hostname=socket.gethostname(), pid=os.getpid(),
                 python=sys.version, cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
                 git_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 git_status=subprocess.check_output(['git', 'status', '--short'], cwd=ROOT, text=True), note=PROTOCOL_NOTE)
+            if benchmark is not None:
+                self.metadata.update(benchmark=benchmark, split='screening_subset',
+                    sampling='manifest_defined', training_overlap_verified=False)
             write_json(meta_path, self.metadata)
             for path in code:
                 destination = self.out/'source'/path.relative_to(ROOT)
@@ -267,6 +306,8 @@ class NativeExperiment:
             truncated=truncated, parsed=parsed, answer_index=index, valid=parsed['valid'],
             invalid_reason=None if parsed['valid'] else parsed['reason'],
             answer=row['options'][index] if parsed['valid'] else None)
+        if self.benchmark is not None:
+            prediction.update(benchmark=self.benchmark, stratum=row['stratum'])
         validate_generated(row, prediction)
         if self.tokenizer is not None:
             audit_generated_tokens(prediction, self.tokenizer)
@@ -278,7 +319,8 @@ class NativeExperiment:
         print(json.dumps(dict(done=len(self.done), total=len(self.rows), id=row['id'], valid=parsed['valid'])), flush=True)
 
     def finish(self):
-        metrics = score_generated(self.rows, read_generated(self.predictions_path, self.rows, tokenizer=self.tokenizer))
+        metrics = score_generated(self.rows, read_generated(self.predictions_path, self.rows,
+            tokenizer=self.tokenizer), benchmark=self.benchmark)
         metrics.update(method=self.metadata['identity']['method'], protocol=self.metadata['identity']['protocol'],
             inference_seed=self.metadata['identity']['inference_seed'],
             finished_at=datetime.now(timezone.utc).isoformat())

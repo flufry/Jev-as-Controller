@@ -1,6 +1,6 @@
 # 05 · 新增扩展：跨视频 benchmark 粗筛运行手册
 
-本文件描述本次新增实现，与原仓库的 LongVideoBench 实验说明分开。以 `04-待办与执行计划.md` 的小样本路线为目标：Video-MME 150 题、MLVU-Dev MCQ 140 题、LVBench 150 题；不追加 LVB 全量实验。原有 `timejev/`、模型评测脚本、融合公式和已发布结果均未修改。
+本文件描述本次新增实现，与原仓库的 LongVideoBench 实验说明分开。以 `04-待办与执行计划.md` 的小样本路线为目标：Video-MME 150 题、MLVU-Dev MCQ 140 题、LVBench 150 题；不追加 LVB 全量实验。共享的 `timejev/lvb_native_generation.py` 增加显式跨 bench 协议与计分支持；LongVideoBench 入口保留原有协议和计分口径。
 
 服务器先按 [06-Docker与服务器环境.md](06-Docker与服务器环境.md) 配好容器。除第 2 节可在宿主机下载外，本文命令在容器内、仓库根目录的 Bash 中执行。
 
@@ -120,15 +120,15 @@ python scripts/build_bench_manifest.py --bench lvbench \
 ```bash
 python scripts/sample_bench_subset.py --bench videomme --seed 43 --n 150 \
   --out runs/screen/videomme/sample.jsonl
-python scripts/sample_bench_subset.py --bench mlvu --seed 42 --per-task 20 \
-  --out runs/screen/mlvu/sample.jsonl
+python scripts/sample_bench_subset.py --bench mlvu --seed 44 --per-task 20 \
+  --out runs/screen/mlvu/sample_44.jsonl
 python scripts/sample_bench_subset.py --bench lvbench --seed 42 --n 150 --proportional \
   --out runs/screen/lvbench/sample.jsonl
 
 python scripts/check_bench_inputs.py --manifest runs/screen/videomme/sample.jsonl \
   --out runs/screen/videomme/input_audit.json --budget
-python scripts/check_bench_inputs.py --manifest runs/screen/mlvu/sample.jsonl \
-  --out runs/screen/mlvu/input_audit.json --budget
+python scripts/check_bench_inputs.py --manifest runs/screen/mlvu/sample_44.jsonl \
+  --out runs/screen/mlvu/input_audit_44.json --budget
 python scripts/check_bench_inputs.py --manifest runs/screen/lvbench/sample.jsonl \
   --out runs/screen/lvbench/input_audit.json --budget
 ```
@@ -157,12 +157,12 @@ source scripts/env_qwen36.sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 # 依次将 BENCH 改为 videomme / mlvu / lvbench；首次可先使用 pilot 的路径。
-BENCH=videomme
-M=runs/screen/$BENCH/sample.jsonl
+BENCH=mlvu
+M=runs/screen/$BENCH/sample_42.jsonl
 
 CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
-  --manifest "$M" --out "runs/screen/$BENCH/videojev_43" --checkpoint models/VideoJev-4B \
-  --seed 43 --device cuda:0 --fps 2 --max-frames 2048 \
+  --manifest "$M" --out "runs/screen/$BENCH/videojev_44_4fps" --checkpoint models/VideoJev-4B \
+  --seed 44 --device cuda:0 --fps 4 --max-frames 4096 \
   --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
 CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
@@ -171,7 +171,13 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
   --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 ```
 
-此入口完整生成回答并解析最终选项；无效、歧义或截断回答计错。原生文本回答不包含 Controller 融合所需的候选 logits。需要 Controller 时，另外运行旧候选评分入口作为专用融合输入：
+此入口完整生成回答并解析最终选项；无效、歧义或截断回答计错。原生文本回答不包含 Controller 融合所需的候选 logits。
+
+`eval_bench_qwen36.py` 与显式入口 `eval_bench_qwen36_native.py` 使用相同方法。新运行的 `run.json` 使用 `video_bench_native_generation_run_v1` schema，`identity.protocol.name` 和 `metrics.json` 的 `protocol.name` 均为 `video_bench_screen_rgb_v1`；两文件均明确记录实际 `benchmark` 和 `split=screening_subset`。指标按真实 `by_stratum` 分组，MLVU 同时报七任务 M-Avg，LVBench 同时报重叠的 `by_question_type`。逐题预测保留 benchmark、stratum、完整回答和生成 token。
+
+旧版 native 结果曾误写 LVB 协议名和 `validation_subset`，属于保存元数据的适配遗漏；修复不改变生成或选项解析算法，也不会改写历史产物。旧结果经清单 SHA、样本 ID 和实际 FPS 等核验后仍可分析，无需仅为更正标签重跑模型。升级后源码与协议指纹已变化，后续运行使用新输出目录，不对旧目录强行 `--resume`。
+
+需要 Controller 时，另外运行旧候选评分入口作为专用融合输入：
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
@@ -182,7 +188,7 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
 
 原来有 LVB 样本和历史结果时，可以用新 VideoJev 入口在新目录重跑同一题集作复现闸门。原 LVB 模型脚本和媒体处理代码没有变，但新报告字段不同；比较答案和候选概率，不要求新旧 metrics JSON 逐字相同。
 
-每个模型目录写 `run.json / predictions.jsonl / metrics.json / runtime.json / source/`。完成标准：预测覆盖全部 ID，概率有效且 answer_index 为 argmax、每题 preprocessing 非空；两模型 protocol 和逐视频 preprocessing 完全一致，才能融合。
+每个模型目录写 `run.json / predictions.jsonl / metrics.json / source/`；native 另存 `multigpu_runtime.json`，候选评分入口另存运行时记录。native 完成标准为完整覆盖 ID、生成 token 可重解码、回答与确定性解析结果一致，解析失败仍保留并计错。候选评分完成标准为预测覆盖全部 ID、概率有效且 answer_index 为 argmax、每题 preprocessing 非空；Controller 的两份候选评分输入必须 protocol 和逐视频 preprocessing 完全一致，才能融合。
 
 中断恢复：原命令只增加 `--resume`，不改源码、清单、模型、媒体、设备协议或参数。新增兼容代码和原模型脚本的 SHA 纳入 settings 指纹，保留原断点校验。首次计算全部权重/媒体 SHA 可能很慢。不要把 Windows 上运行到一半的 `run.json` 当成能在 Linux 接着跑的断点：绝对路径、媒体时间戳和环境指纹会变；应在服务器新建输出目录。
 
@@ -190,16 +196,16 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
 
 ```bash
 BENCH=videomme
-M=runs/screen/$BENCH/sample.jsonl
+M=runs/screen/$BENCH/sample_44.jsonl
 
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev" \
-  --out "runs/screen/$BENCH/controller" --beta 2 --qwen-method qwen36
+  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_44" \
+  --out "runs/screen/$BENCH/controller_44" --beta 2 --qwen-method qwen36
 
 python scripts/summarize_bench.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev" \
-  --controller "runs/screen/$BENCH/controller" --out "runs/screen/$BENCH/summary" \
-  --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 42
+  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_44" \
+  --controller "runs/screen/$BENCH/controller_44" --out "runs/screen/$BENCH/summary_44" \
+  --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 43
 
 # 三个 bench 分别完成上面流程后：
 python scripts/report_bench_screen.py --summaries \
@@ -217,6 +223,8 @@ python scripts/report_bench_screen.py --summaries \
 所有结果固定声明：**粗筛子集、非官方全量口径、未算力对齐、训练重叠未核实**。先从第一个 bench 的真实 `timing` 和 `runtime.json` 外推预算，不承诺服务器运行时长。
 
 ## 7. 本地验证与服务器验收
+
+native 元数据修复的本地回归：`tests/test_lvb_native_generation.py`、`tests/test_lvb_native_summary.py` 和 `tests/test_bench_screen.py` 合计 **92 项通过**。覆盖跨 bench 入口完整生成及输出字段、MLVU 宏平均、LVBench 类别统计、恢复指纹和原 LVB 汇总。模型调用使用合成输出，不代替服务器真实 GPU 推理验收。
 
 本次本地验证：**28 项新增测试通过**；加上 `test_lvb_experiment.py / test_lvb_controller.py / test_lvb_qwen36.py`，合计 **81 项通过**。同时通过新增 Python 文件语法和安装脚本 Bash 语法检查。新增测试包含完整合成标注库存、确定性抽样、MLVU 非等量宏平均、融合公式/来源校验、第三选项统计、断点恢复和代码指纹拒绝。这里的合成视频占位文件不用于证明真实解码或真实推理正确。
 

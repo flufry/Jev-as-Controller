@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 import torch
 
-from scripts.bench_io import load_rows
+from scripts.bench_io import BENCHES, load_rows, stratum
 from scripts.eval_longvideobench_qwen import ANSWER_INSTRUCTION, text_inputs
 from scripts.eval_longvideobench_qwen36 import (
     device_plan, load_backend, load_model, memory_budget, synchronize,
@@ -47,17 +47,23 @@ def main(argv=None):
 
     rows = load_rows(args.manifest)
     meta_path = Path(args.manifest).with_suffix('.meta.json')
+    sample_seed = None
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        sample_seed = meta.get('seed')
         if meta.get('schema') == 'bench_subset_v1' and meta.get('seed') != args.seed:
             raise ValueError('Inference seed must match sample metadata seed')
+    benchmark = rows[0].get('benchmark')
+    if benchmark not in BENCHES:
+        raise ValueError(f'需要跨benchmark清单，支持的数据集：{BENCHES}')
     for row in rows:
-        row.setdefault('duration_group', row.get('stratum', row.get('official_duration', 'all')))
+        row['stratum'] = stratum(row)
+        row['duration_group'] = row['stratum']
     if args.limit is not None:
         rows = rows[:args.limit]
     os.environ['HF_HUB_OFFLINE'] = os.environ['TRANSFORMERS_OFFLINE'] = '1'
     parameters = generation_parameters(args.max_new_tokens)
-    input_protocol = protocol(args)
+    input_protocol = dict(protocol(args), name='video_bench_screen_rgb_v1')
     checkpoint = Path(args.checkpoint)
     for name in ('config.json', 'generation_config.json', 'tokenizer.json', 'preprocessor_config.json',
                  'model.safetensors.index.json'):
@@ -85,9 +91,11 @@ def main(argv=None):
     code_paths = [ROOT/'timejev/lvb_native_generation.py', Path(__file__),
         ROOT/'scripts/eval_longvideobench_qwen36_native.py', ROOT/'scripts/eval_longvideobench_qwen36.py',
         ROOT/'scripts/eval_longvideobench_qwen.py', ROOT/'scripts/bench_io.py',
+        ROOT/'scripts/eval_bench_qwen36.py', ROOT/'timejev/mlvu_benchmark.py',
         ROOT/'timejev/lvb_experiment.py', ROOT/'timejev/rgb_media.py', ROOT/'timejev/video.py']
     run = NativeExperiment(args, settings, tokenizer=processor.tokenizer, rows=rows,
-        code_paths=code_paths, method='qwen36_native_instruct')
+        code_paths=code_paths, method='qwen36_native_instruct', sample_seed=sample_seed,
+        input_protocol=input_protocol, benchmark=benchmark)
     if len(run.done) == len(run.rows):
         return run.finish()
     if not torch.cuda.is_available() or torch.cuda.device_count() < args.gpu_count:

@@ -137,7 +137,7 @@ def prepare_video(processor, path, *, fps=2., max_frames=2048, context=262144):
     return native['pixel_values_videos'], record
 
 
-def format_predictions(output, rows, record, decoder):
+def format_predictions(output, rows, record, decoder, *, return_logits=False):
     results = []
     for i, row in enumerate(rows):
         count = int(output.score_mask[i].sum())
@@ -148,6 +148,8 @@ def format_predictions(output, rows, record, decoder):
         if row.get('task') == 'choice':
             answer = int(np.argmax(probabilities))
             value.update(answer_index=answer, answer=row['options'][answer])
+            if return_logits:
+                value['candidate_logits'] = logits
         else:
             value['interval'] = decode(logits, record['score_times'], record['sampled_duration'],
                 decoder['threshold'], decoder['smooth'], bounds=record['score_bounds'],
