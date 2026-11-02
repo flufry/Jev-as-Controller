@@ -81,7 +81,7 @@ def sample(manifest, reference, out, per_group=25, seed=42):
         selected_ids=[row['id'] for row in sampled],
         sample_sha256=hashlib.sha256(text.encode()).hexdigest())
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open('x') as handle:
+    with out.open('x', encoding='utf-8', newline='\n') as handle:
         handle.write(text)
     with meta_path.open('x') as handle:
         json.dump(metadata, handle, ensure_ascii=False, allow_nan=False, indent=2)

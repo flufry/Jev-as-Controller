@@ -23,6 +23,19 @@ def generic_load_sample(path):
 
 def validate_prediction(row, prediction):
     import math
+    if 'logits' in prediction or 'candidate_logits' in prediction:
+        from scripts.videojev_candidate_logits import validate_logits
+        # Controller retains Qwen's input logits; its output probabilities belong
+        # to the fused distribution, not to those input logits.
+        scored = dict(prediction, probabilities=prediction['qwen_probabilities']) if 'qwen_probabilities' in prediction else prediction
+        logits = validate_logits(scored, len(row['options']))
+        if 'probabilities' not in prediction:
+            if (prediction.get('id') != row['id'] or prediction.get('query') != row['query']
+                    or prediction.get('options') != row['options'] or prediction.get('task') != 'choice'
+                    or type(prediction.get('answer_index')) is not int
+                    or prediction['answer_index'] != max(range(len(logits)), key=logits.__getitem__)):
+                raise ValueError(f'Invalid raw-logit prediction: {row["id"]}')
+            return
     values = prediction.get('probabilities', [])
     if (prediction.get('id') != row['id'] or prediction.get('query') != row['query']
             or prediction.get('options') != row['options'] or prediction.get('task') != 'choice'
@@ -119,7 +132,7 @@ def install(legacy=None):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((ROOT / name).read_bytes())
 
-        def append(self, row, probabilities, **details):
+        def append(self, row, probabilities=None, **details):
             return super().append(row, probabilities, stratum=stratum(row),
                                   benchmark=row.get('benchmark', 'longvideobench'), **details)
 

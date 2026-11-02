@@ -68,7 +68,7 @@ def repeats(tmp_path):
             metrics = score(selected, read_predictions(out/'predictions.jsonl', selected))
             metrics.update(method=method, protocol=protocol)
             write_json(out/'metrics.json', metrics)
-        evaluate(sampled, run/'qwen', run/'videojev', run/'controller')
+        evaluate(sampled, run/'qwen', run/'videojev', run/'controller', fusion='probability')
         runs.append(run)
     return runs
 
@@ -119,7 +119,7 @@ def test_incompatible_or_forged_repeats_rejected(repeats, tmp_path, kind):
         shutil.rmtree(run)
         shutil.copytree(repeats[0], run)
         shutil.rmtree(run/'controller')
-        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller')
+        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller', fusion='probability')
     elif kind in ('same_seed', 'sample_sha', 'group_count'):
         path = run/'sample.meta.json'
         metadata = json.loads(path.read_text())
@@ -137,7 +137,7 @@ def test_incompatible_or_forged_repeats_rejected(repeats, tmp_path, kind):
                 source['identity']['seed'] = 42
                 write_json(source_path, source)
             shutil.rmtree(run/'controller')
-            evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller')
+            evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller', fusion='probability')
     elif kind in ('config', 'checkpoint', 'packages', 'code'):
         path = run/'qwen/run.json'
         metadata = json.loads(path.read_text())
@@ -146,7 +146,7 @@ def test_incompatible_or_forged_repeats_rejected(repeats, tmp_path, kind):
         write_json(path, metadata)
         # 重新运行控制器，保证拒绝原因来自跨次配置校验，而非旧来源哈希。
         shutil.rmtree(run/'controller')
-        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller')
+        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller', fusion='probability')
     elif kind == 'metrics':
         path = run/'qwen/metrics.json'
         metadata = json.loads(path.read_text())
@@ -201,7 +201,7 @@ def test_media_and_actual_annotation_hashes_checked(repeats, tmp_path, kind):
                 predictions[0]['preprocessing']['source']['identity']['bytes'] += 1
                 write_jsonl(predictions, path)
         shutil.rmtree(run/'controller')
-        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller')
+        evaluate(run/'sample.jsonl', run/'qwen', run/'videojev', run/'controller', fusion='probability')
     message = ('跨次重叠视频' if kind == 'cross_seed_content' else
                '原始标注文件' if kind.startswith('source_') else
                '逐题预处理源身份' if kind == 'preprocessing_identity' else '两基线媒体指纹')

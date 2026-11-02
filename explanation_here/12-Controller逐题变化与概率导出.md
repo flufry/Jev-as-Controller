@@ -59,11 +59,12 @@ python scripts/analyze_controller_changes.py \
 |---|---|
 | `qwen_logit` | 输入 Qwen 候选字母原始分数 z |
 | `qwen_probability` | π₀ = softmax(z) |
-| `videojev_probability` | VideoJev 的 Fₛ，即实际融合所用的候选概率 |
-| `correction` | β × Fₛ |
-| `fused_score` | z + β × Fₛ |
-| `controller_probability` | π₁ = softmax(z + β × Fₛ) |
+| `videojev_probability` | VideoJev 的候选概率 p_J = softmax(s_J) |
+| `videojev_score` | 实际参与融合的分数：loglinear 用 s_J，probability 用 p_J |
+| `correction` | β × 实际融合分数 |
+| `fused_score` | z + correction |
+| `controller_probability` | π₁ = softmax(fused_score) |
 
-`z + βFₛ` 与 `log(π₀) + βFₛ` 相差每题所有选项共享的常数，两者 softmax 结果相同。所有概率是原始候选选项内的归一化概率。脚本不对 VideoJev 概率取 log，也不再次对它做 softmax。
+每条记录保留实际 `fusion`。新 loglinear 直接使用 Jev 原始 logits；旧 probability 模式才使用其 softmax 概率。只有概率的历史来源在各概率严格大于0时可用 log(p_J) 恢复等效分差。所有概率均在原始候选选项内归一化；同一次导出拒绝混用两种融合模式。
 
 本次 `D:/cmder/runs` 实际导出：450 题次、异答 92、改答 32、改对 13、改错 12、改后仍错 7、第三选项 1。逐 seed 的改对/改错分别为 42：5/2，43：3/4，44：5/6；合计净增正确 1。

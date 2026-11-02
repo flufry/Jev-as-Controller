@@ -87,6 +87,16 @@ def checkpoint_identity(directory):
 
 
 def validate_prediction(row, prediction):
+    if 'probabilities' not in prediction and 'logits' in prediction:
+        values = prediction['logits']
+        if (prediction.get('id') != row['id'] or prediction.get('query') != row['query']
+                or prediction.get('options') != row['options'] or not isinstance(values, list)
+                or len(values) != len(row['options'])
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
+                or type(prediction.get('answer_index')) is not int
+                or prediction['answer_index'] != max(range(len(values)), key=values.__getitem__)):
+            raise ValueError(f'预测内容或原始候选 logits 无效：{row["id"]}')
+        return
     values = prediction.get('probabilities', [])
     if (prediction.get('id') != row['id'] or prediction.get('query') != row['query']
             or prediction.get('options') != row['options'] or len(values) != len(row['options'])
@@ -181,14 +191,16 @@ class Experiment:
                 subprocess.check_output(['git', 'diff', '--binary'], cwd=ROOT))
         self.done = set(read_predictions(self.predictions_path, self.rows, complete=False))
 
-    def append(self, row, probabilities, **details):
+    def append(self, row, probabilities=None, **details):
         if row['id'] in self.done:
             raise ValueError(f'重复写入预测：{row["id"]}')
-        values = list(probabilities)
+        values = list(probabilities if probabilities is not None else details['logits'])
         index = max(range(len(values)), key=values.__getitem__)
         prediction = dict(details, id=row['id'], task='choice', query=row['query'],
             options=row['options'], video_key=row['video_key'], duration_group=row['duration_group'],
-            probabilities=values, answer_index=index, answer=row['options'][index])
+            answer_index=index, answer=row['options'][index])
+        if probabilities is not None:
+            prediction['probabilities'] = values
         validate_prediction(row, prediction)
         with self.predictions_path.open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(prediction, ensure_ascii=False, allow_nan=False)+'\n')

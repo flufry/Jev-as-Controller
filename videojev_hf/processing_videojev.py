@@ -137,18 +137,21 @@ def prepare_video(processor, path, *, fps=2., max_frames=2048, context=262144):
     return native['pixel_values_videos'], record
 
 
-def format_predictions(output, rows, record, decoder, *, return_logits=False):
+def format_predictions(output, rows, record, decoder, *, return_logits=False, logits_only=False):
     results = []
     for i, row in enumerate(rows):
         count = int(output.score_mask[i].sum())
         logits = output.logits[i, :count].float().cpu().tolist()
-        probabilities = output.probabilities[i, :count].float().cpu().tolist()
-        value = dict(id=row.get('id', i), task=row.get('task', 'grounding'),
-                     probabilities=probabilities)
+        value = dict(id=row.get('id', i), task=row.get('task', 'grounding'))
+        if not logits_only or row.get('task') != 'choice':
+            probabilities = output.probabilities[i, :count].float().cpu().tolist()
+            value['probabilities'] = probabilities
         if row.get('task') == 'choice':
-            answer = int(np.argmax(probabilities))
+            answer = int(np.argmax(logits if logits_only else probabilities))
             value.update(answer_index=answer, answer=row['options'][answer])
-            if return_logits:
+            if logits_only:
+                value['logits'] = logits
+            elif return_logits:
                 value['candidate_logits'] = logits
         else:
             value['interval'] = decode(logits, record['score_times'], record['sampled_duration'],

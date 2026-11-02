@@ -1,12 +1,13 @@
 # 05 · 新增扩展：跨视频 benchmark 粗筛运行手册
 
-本文件描述本次新增实现，与原仓库的 LongVideoBench 实验说明分开。以 `04-待办与执行计划.md` 的小样本路线为目标：Video-MME 150 题、MLVU-Dev MCQ 140 题、LVBench 150 题；不追加 LVB 全量实验。共享的 `timejev/lvb_native_generation.py` 增加显式跨 bench 协议与计分支持；LongVideoBench 入口保留原有协议和计分口径。
+本文件描述本次新增实现，与原仓库的 LongVideoBench 实验说明分开。以 `04-待办与执行计划.md` 的小样本路线为目标：Video-MME 150 题、MLVU-Dev MCQ 140 题、LVBench 150 题；不追加 LVB 全量实验。已对齐官方 `3a26780` 的默认 log-linear 融合；MLVU/LVBench 两种公式和三 seed 的完整命令见 [13-VideoJev原始Logits与LogLinear融合.md](13-VideoJev原始Logits与LogLinear融合.md)。
 
 服务器先按 [06-Docker与服务器环境.md](06-Docker与服务器环境.md) 配好容器。除第 2 节可在宿主机下载外，本文命令在容器内、仓库根目录的 Bash 中执行。
 
 ## 1. 实现与计划的补充
 
 - 两模型统一使用 **2 FPS / 最多 2048 帧 / context 262144 / 视觉 token 24576 / 无字幕无音频**；主实验 β 固定为 2。β=1/2/3 只作事后诊断，不据此调参。
+- VideoJev 默认保存原始 `logits` 并按 argmax 计分。Controller 默认 `--fusion loglinear`，直接使用这些分数；`--fusion probability` 显式复现旧公式，在 CPU 融合时单独 softmax，无需重跑模型。
 - 兼容层不仅替换加载和计分，也处理旧 `Experiment.append()`、Controller 对 `duration_group` 的直接索引。内部用真实 `stratum` 作别名，不把新数据集强行映射为 LVB 四档。原脚本仅在当前调用期间打补丁，结束后恢复。
 - 新增 `bench_io.py` 负责不加载模型的清单校验。媒体路径必须指向同一个原视频，拒绝帧缓存；同视频多题共享一致的路径和时长。
 - **LVBench 的 `question_type` 是多标签列表**。同一题可能属于多个类别，无法把六类当作互斥人口直接分配 150 个名额。实现按排序后的“标签组合”建立互斥分层，再用整数最大余数法按比例抽题；汇总同时报告每个官方类别的重叠统计。类别计数之和可以超过样本总数。
@@ -118,18 +119,18 @@ python scripts/build_bench_manifest.py --bench lvbench \
 ## 4. 抽样和预算预检
 
 ```bash
-python scripts/sample_bench_subset.py --bench videomme --seed 43 --n 150 \
-  --out runs/screen/videomme/sample.jsonl
-python scripts/sample_bench_subset.py --bench mlvu --seed 44 --per-task 20 \
-  --out runs/screen/mlvu/sample_44.jsonl
+python scripts/sample_bench_subset.py --bench videomme --seed 42 --n 150 \
+  --out runs/screen/videomme/sample_42.jsonl
+python scripts/sample_bench_subset.py --bench mlvu --seed 42 --per-task 20 \
+  --out runs/screen/mlvu/sample_42.jsonl
 python scripts/sample_bench_subset.py --bench lvbench --seed 42 --n 150 --proportional \
-  --out runs/screen/lvbench/sample.jsonl
+  --out runs/screen/lvbench/sample_42.jsonl
 
-python scripts/check_bench_inputs.py --manifest runs/screen/videomme/sample.jsonl \
+python scripts/check_bench_inputs.py --manifest runs/screen/videomme/sample_42.jsonl \
   --out runs/screen/videomme/input_audit.json --budget
-python scripts/check_bench_inputs.py --manifest runs/screen/mlvu/sample_44.jsonl \
-  --out runs/screen/mlvu/input_audit_44.json --budget
-python scripts/check_bench_inputs.py --manifest runs/screen/lvbench/sample.jsonl \
+python scripts/check_bench_inputs.py --manifest runs/screen/mlvu/sample_42.jsonl \
+  --out runs/screen/mlvu/input_audit.json --budget
+python scripts/check_bench_inputs.py --manifest runs/screen/lvbench/sample_42.jsonl \
   --out runs/screen/lvbench/input_audit.json --budget
 ```
 
@@ -161,14 +162,14 @@ BENCH=mlvu
 M=runs/screen/$BENCH/sample_42.jsonl
 
 CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
-  --manifest "$M" --out "runs/screen/$BENCH/videojev_44_4fps" --checkpoint models/VideoJev-4B \
-  --seed 44 --device cuda:0 --fps 4 --max-frames 4096 \
+  --manifest "$M" --out "runs/screen/$BENCH/videojev_logits" --checkpoint models/VideoJev-4B \
+  --seed 42 --device cuda:0 --fps 2 --max-frames 2048 \
   --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
 CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36.py \
-  --manifest "$M" --out "runs/screen/$BENCH/qwen_native" --checkpoint models/Qwen3.6-35B-A3B \
+  --manifest "$M" --out "runs/screen/$BENCH/qwen_native_4fps" --checkpoint models/Qwen3.6-35B-A3B \
   --seed 42 --device cuda:0 --gpu-count 5 --max-memory-gib 25.5 \
-  --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
+  --fps 4 --max-frames 4096 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 ```
 
 此入口完整生成回答并解析最终选项；无效、歧义或截断回答计错。原生文本回答不包含 Controller 融合所需的候选 logits。
@@ -186,32 +187,37 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
   --fps 2 --max-frames 2048 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 ```
 
-原来有 LVB 样本和历史结果时，可以用新 VideoJev 入口在新目录重跑同一题集作复现闸门。原 LVB 模型脚本和媒体处理代码没有变，但新报告字段不同；比较答案和候选概率，不要求新旧 metrics JSON 逐字相同。
+原来有 LVB 样本和历史结果时，可以用新 VideoJev 入口在新目录重跑同一题集作复现闸门。模型与视频采样协议保持一致；新入口保存原始分数，可比较 argmax 答案及其 softmax 后的候选概率，不要求新旧 metrics JSON 逐字相同。
 
-每个模型目录写 `run.json / predictions.jsonl / metrics.json / source/`；native 另存 `multigpu_runtime.json`，候选评分入口另存运行时记录。native 完成标准为完整覆盖 ID、生成 token 可重解码、回答与确定性解析结果一致，解析失败仍保留并计错。候选评分完成标准为预测覆盖全部 ID、概率有效且 answer_index 为 argmax、每题 preprocessing 非空；Controller 的两份候选评分输入必须 protocol 和逐视频 preprocessing 完全一致，才能融合。
+每个模型目录写 `run.json / predictions.jsonl / metrics.json / source/`；native 另存 `multigpu_runtime.json`，候选评分入口另存运行时记录。native 完成标准为完整覆盖 ID、生成 token 可重解码、回答与确定性解析结果一致，解析失败仍保留并计错。Jev 原始 logits 必须有限且 answer_index 为 argmax；Qwen 候选概率须与 logits 一致，每题 preprocessing 非空；Controller 的两份输入必须 protocol 和逐视频 preprocessing 完全一致，才能融合。
 
 中断恢复：原命令只增加 `--resume`，不改源码、清单、模型、媒体、设备协议或参数。新增兼容代码和原模型脚本的 SHA 纳入 settings 指纹，保留原断点校验。首次计算全部权重/媒体 SHA 可能很慢。不要把 Windows 上运行到一半的 `run.json` 当成能在 Linux 接着跑的断点：绝对路径、媒体时间戳和环境指纹会变；应在服务器新建输出目录。
 
 ## 6. CPU 融合、诊断与跨 bench 总表
 
 ```bash
-BENCH=videomme
-M=runs/screen/$BENCH/sample_44.jsonl
+BENCH=mlvu
+M=runs/screen/$BENCH/sample_42.jsonl
 
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_44" \
-  --out "runs/screen/$BENCH/controller_44" --beta 2 --qwen-method qwen36
+  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
+  --out "runs/screen/$BENCH/controller_loglinear" --fusion loglinear --beta 2
+
+# 单独评测旧方法：同一份 Jev logits 先 softmax，再按旧公式融合。
+python scripts/eval_bench_controller.py --manifest "$M" \
+  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
+  --out "runs/screen/$BENCH/controller_probability" --fusion probability --beta 2
 
 python scripts/summarize_bench.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_44" \
-  --controller "runs/screen/$BENCH/controller_44" --out "runs/screen/$BENCH/summary_44" \
-  --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 43
+  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
+  --controller "runs/screen/$BENCH/controller_loglinear" --out "runs/screen/$BENCH/summary_loglinear" \
+  --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 42
 
 # 三个 bench 分别完成上面流程后：
 python scripts/report_bench_screen.py --summaries \
-  runs/screen/videomme/summary/results.json \
-  runs/screen/mlvu/summary/results.json \
-  runs/screen/lvbench/summary/results.json --out runs/screen/report
+  runs/screen/videomme/summary_loglinear/results.json \
+  runs/screen/mlvu/summary_loglinear/results.json \
+  runs/screen/lvbench/summary_loglinear/results.json --out runs/screen/report_loglinear
 ```
 
 汇总不仅读取 metrics，还重验完整预测、run/预测/metrics 的来源 SHA、清单 SHA、两模型 seed 和固定协议、逐题预处理，以及 β=2 的融合公式。任何一份来源被改过都拒绝。随机选边模拟 50 次，同时给出其精确期望 `(Qwen指标 + VideoJev指标)/2`；该 50 次波动不是样本总体准确率的置信区间。

@@ -24,12 +24,14 @@
 
 ```text
 π₀ = softmax(Qwen 第一个 decode 位置上裸候选字母 A/B/C… 的原始 logits)
-F_s = VideoJev 输出的候选 softmax 概率（不取 log、不再 softmax）
-π₁ = softmax(log π₀ + β·F_s) = softmax(z + β·F_s),  β = 2
+s_J = VideoJev 输出的原始候选 logits；p_J = softmax(s_J)
+π₁ = softmax(log π₀ + β·s_J) = softmax(z + β·s_J),  β = 2
 answer = argmax π₁
 ```
 
-目前公开的实验只在 **LongVideoBench validation 的分层子集**上做（100 题/seed、seed 42/43/44、等量 300 题/seed 两种抽样口径），主结果：Controller 平均 72.67%（比例抽样）/ 75.11%（等量抽样），比同协议 2 FPS Qwen 基线高约 2.7–3.7 个百分点。
+当前已对齐官方 `3a26780` 的 log-linear 默认公式。旧方法仅在显式 `--fusion probability` 时使用 `softmax(z+β·p_J)`。跨 bench Jev 入口默认只保存原始 logits；MLVU/LVBench 直接运行命令见第13篇。
+
+已公开的历史实验在 **LongVideoBench validation 的分层子集**上做（100 题/seed、seed 42/43/44、等量 300 题/seed 两种抽样口径），旧概率融合结果：Controller 平均 72.67%（比例抽样）/ 75.11%（等量抽样），比同协议 2 FPS Qwen 基线高约 2.7–3.7 个百分点。这些不是新 log-linear 默认配置的成绩。
 
 ## 三分钟读懂代码结构
 

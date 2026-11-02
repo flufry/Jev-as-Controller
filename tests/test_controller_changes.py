@@ -49,7 +49,7 @@ def controller_runs(tmp_path):
         return [dict(r, duration_group=r['stratum']) for r in rows]
 
     with patch('scripts.bench_compat.generic_load_sample', offline_load):
-        evaluate(manifest, tmp_path/'qwen_logits', tmp_path/'videojev', tmp_path/'controller')
+        evaluate(manifest, tmp_path/'qwen_logits', tmp_path/'videojev', tmp_path/'controller', fusion='probability')
     return dict(manifest=manifest, qwen=tmp_path/'qwen_logits',
         videojev=tmp_path/'videojev', controller=tmp_path/'controller')
 

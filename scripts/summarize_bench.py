@@ -15,35 +15,35 @@ LIMITATIONS = ('粗筛子集，非官方全量口径；两模型未做算力对�
                'β 扫描仅诊断，不能用来选择该子集上的最佳 β。')
 
 
-def controlled(raw, jev, beta):
-    logits = raw.get('candidate_logits', [])
-    if (len(logits) != len(raw['options'])
-            or any(type(x) not in (int, float) or not math.isfinite(x) for x in logits)
-            or not math.isfinite(beta)):
-        raise ValueError('Invalid Qwen candidate logits or beta')
-    peak = max(logits)
-    weights = [math.exp(x - peak) for x in logits]
-    pi0 = [x / sum(weights) for x in weights]
-    if any(not math.isclose(p, q, rel_tol=1e-5, abs_tol=1e-6) for p, q in zip(pi0, raw['probabilities'])):
-        raise ValueError('Qwen logits do not match source probabilities')
-    scores = [z + beta * p for z, p in zip(logits, jev['probabilities'])]
-    weights = [math.exp(x - max(scores)) for x in scores]
-    probabilities = [x / sum(weights) for x in weights]
-    return probabilities, max(range(len(scores)), key=scores.__getitem__)
+def fusion_mode(identity):
+    # Missing mode means historical probability fusion, never the new default.
+    value = identity.get('fusion', 'loglinear' if identity.get('method') == 'jev_as_controller_loglinear' else 'probability')
+    if value not in ('probability', 'loglinear'):
+        raise ValueError('Unknown Controller fusion mode')
+    return value
+
+
+def controlled(raw, jev, beta, fusion='probability', score_source='auto'):
+    from scripts.eval_bench_controller import control
+    result = control(raw, jev, beta, fusion=fusion, score_source=score_source)
+    return result['probabilities'], result['answer_index']
 
 
 def read_run(directory, rows, manifest_sha, method):
     directory = Path(directory).resolve()
     run = json.loads((directory / 'run.json').read_text(encoding='utf-8'))
     identity = run['identity']
-    if identity['method'] != method or identity['manifest_sha256'] != manifest_sha:
+    methods = (method,) if isinstance(method, str) else method
+    if identity['method'] not in methods or identity['manifest_sha256'] != manifest_sha:
         raise ValueError('Run method/manifest SHA mismatch')
     predictions = read_predictions(directory / 'predictions.jsonl', rows)
     metrics = generic_score(rows, predictions)
     saved = json.loads((directory / 'metrics.json').read_text(encoding='utf-8'))
-    if (any(saved.get(k) != v for k, v in metrics.items()) or saved.get('method') != method
+    is_controller = identity['method'] in ('jev_as_controller', 'jev_as_controller_loglinear')
+    if (any(saved.get(k) != v for k, v in metrics.items()) or saved.get('method') != identity['method']
             or saved.get('protocol') != identity['protocol']
-            or method == 'jev_as_controller' and saved.get('beta') != identity.get('beta')):
+            or is_controller and (saved.get('beta') != identity.get('beta')
+                                   or fusion_mode(saved) != fusion_mode(identity))):
         raise ValueError(f'Saved metrics differ from predictions: {directory}')
     source = dict(directory=str(directory), identity=identity, **{
         name + '_sha256': sha256(directory / filename) for name, filename in
@@ -62,8 +62,10 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
     rows = load_rows(manifest)
     digest = sha256(manifest)
     runs = [read_run(p, rows, digest, m) for p, m in
-            ((qwen, 'qwen36'), (videojev, 'videojev'), (controller, 'jev_as_controller'))]
+            ((qwen, 'qwen36'), (videojev, 'videojev'), (controller, ('jev_as_controller', 'jev_as_controller_loglinear')))]
     (qp, qs, qm), (jp, js, jm), (cp, cs, cm) = runs
+    fusion = fusion_mode(cs['identity'])
+    score_source = cs['identity'].get('score_source', cs['identity'].get('videojev_score_source', 'auto'))
     protocols = [s['identity']['protocol'] for _, s, _ in runs]
     protocol = protocols[0]
     expected = dict(fps=2., max_frames=2048, context=262144, visual_token_budget=24576,
@@ -81,17 +83,31 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
     if cs['identity'].get('beta') != 2 or cm.get('beta', 2) != 2:
         raise ValueError('Primary controller must use beta=2')
     for name, source in (('qwen', qs), ('videojev', js)):
-        if cs['identity']['sources'].get(name) != source:
+        saved_source = cs['identity']['sources'].get(name, {})
+        if any(saved_source.get(k) != source[k] for k in ('identity', 'run_sha256', 'predictions_sha256', 'metrics_sha256')):
             raise ValueError('Controller source fingerprints no longer match input runs')
     for row in rows:
         key = row['id']
         audit = qp[key].get('preprocessing')
         if not isinstance(audit, dict) or not audit or audit != jp[key].get('preprocessing') or audit != cp[key].get('preprocessing'):
             raise ValueError(f'Video preprocessing mismatch: {key}')
-        probabilities, index = controlled(qp[key], jp[key], 2.)
+        from scripts.eval_bench_controller import control
+        expected_prediction = control(qp[key], jp[key], 2., fusion=fusion, score_source=score_source)
+        probabilities, index = expected_prediction['probabilities'], expected_prediction['answer_index']
+        if 'fusion' in cp[key] and cp[key]['fusion'] != fusion:
+            raise ValueError(f'Per-question fusion mode mismatch: {key}')
         if index != cp[key]['answer_index'] or any(not math.isclose(p, q, abs_tol=1e-7)
                                                   for p, q in zip(probabilities, cp[key]['probabilities'])):
             raise ValueError(f'Controller formula does not match source predictions: {key}')
+        for field in ('candidate_logits', 'qwen_probabilities', 'videojev_probabilities', 'videojev_logits',
+                      'fused_logits', 'videojev_scores'):
+            if field in cp[key]:
+                values = cp[key][field]
+                target = expected_prediction.get(field)
+                if (not isinstance(values, list) or target is None or len(values) != len(target)
+                        or any(type(v) not in (int, float) or not math.isfinite(v)
+                               or not math.isclose(v, t, rel_tol=1e-6, abs_tol=1e-7) for v, t in zip(values, target))):
+                    raise ValueError(f'Controller saved scores do not match sources: {key}/{field}')
     gold = np.array([r['answer_index'] for r in rows])
     choices = {name: np.array([p[r['id']]['answer_index'] for r in rows])
                for name, p in (('qwen36', qp), ('videojev', jp), ('controller', cp))}
@@ -132,7 +148,7 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
     room = methods['or_reference']['metric'] - methods['qwen36']['metric']
     sweep = {}
     for beta in [float(v) for v in beta_sweep.split(',')]:
-        values = np.array([controlled(qp[r['id']], jp[r['id']], beta)[1] == r['answer_index'] for r in rows])
+        values = np.array([controlled(qp[r['id']], jp[r['id']], beta, fusion=fusion, score_source=score_source)[1] == r['answer_index'] for r in rows])
         sweep[str(beta)] = dict(metric=metric(values), delta_vs_qwen=metric(values) - methods['qwen36']['metric'])
     same_direction = all(v['delta_vs_qwen'] > 0 for v in sweep.values()) if delta > 0 else all(v['delta_vs_qwen'] < 0 for v in sweep.values()) if delta < 0 else False
     decision = ('no-go: 排查清单/协议后，两个 top-1 参照空间不足' if room < .01 or disagree.mean() < .05
@@ -151,7 +167,7 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
     result = dict(schema='bench_screen_summary_v1', benchmark=rows[0].get('benchmark'), n=len(rows),
         seed=qs['identity']['seed'], manifest_sha256=digest,
         sample_meta=json.loads(sample_meta.read_text(encoding='utf-8')) if sample_meta.exists() else None,
-        primary_metric=qm['primary_metric'], protocol=protocol, beta=2., methods=methods,
+        primary_metric=qm['primary_metric'], protocol=protocol, beta=2., fusion=fusion, methods=methods,
         delta_vs_qwen=delta, delta_ci95=ci(draws['controller'] - draws['qwen36']), or_minus_qwen=room,
         disagreement=dict(n=int(disagree.sum()), rate=float(disagree.mean()),
             controller_changes_on_agreement=int(((~disagree) & (choices['controller'] != choices['qwen36'])).sum()),
@@ -164,7 +180,7 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
         decision=decision, limitations=LIMITATIONS, training_overlap_verified=False,
         sources=dict(qwen=qs, videojev=js, controller=cs), summarizer_sha256=sha256(__file__))
     lines = [f'# {result["benchmark"]} 粗筛（n={len(rows)}, seed={result["seed"]}）', '',
-             f'主指标：{result["primary_metric"]}；2 FPS / 2048 帧 / context 262144 / 视觉 token 24576；无字幕、无音频。', '',
+             f'主指标：{result["primary_metric"]}；融合：{fusion}，β=2；2 FPS / 2048 帧 / context 262144 / 视觉 token 24576；无字幕、无音频。', '',
              '| 方法 | 主指标 % | 答对/总数 | 95% bootstrap CI % |', '|---|---:|---:|---|']
     for name, row in methods.items():
         interval = ' / '.join(f'{100*v:.2f}' for v in row['ci95']) if 'ci95' in row else '—（50%随机选边模拟）'

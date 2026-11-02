@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.compare_longvideobench_sampling import resources
-from scripts.eval_longvideobench_controller import control, read_source, softmax
+from scripts.eval_longvideobench_controller import FUSION_FORMULAS, control, controller_fusion, read_source, softmax
 from scripts.summarize_longvideobench_repeats import close_values, fingerprint
 from timejev.longvideobench_benchmark import DURATION_NAMES
 from timejev.lvb_experiment import GROUPS, load_sample, sha256, write_json
@@ -139,17 +139,23 @@ def summarize(manifest, qwen_baseline, qwen_controller, videojev_baseline, video
                 or any(a['sampled_duration'] != audits['qwen_controller']['sampled_duration'] for a in audits.values())):
             raise ValueError(f'同协议预处理或跨协议完整采样时长不一致：{row["id"]}')
     identity = sources['controller']['identity']
+    fusion = controller_fusion(identity)
+    controller_metrics = json.loads((Path(controller)/'metrics.json').read_text())
     if (identity.get('beta') != 2 or identity.get('sources') != {
             'qwen': sources['qwen_controller'], 'videojev': sources['videojev_controller']}
-            or json.loads((Path(controller)/'metrics.json').read_text()).get('beta') != 2):
-        raise ValueError('Controller 必须真实使用 Qwen3.6 与 VideoJev 的两份 2 FPS 源和 beta=2')
+            or controller_metrics.get('beta') != 2 or controller_fusion(controller_metrics) != fusion):
+        raise ValueError('Controller 必须真实使用两份 2 FPS 源、beta=2 及一致的融合模式')
     for row in rows:
         raw, jev, actual = [predictions[role][row['id']] for role in ('qwen_controller', 'videojev_controller', 'controller')]
-        expected = control(raw, jev, 2.)
-        if (actual.get('beta') != 2 or actual.get('candidate_logits') != raw['candidate_logits']
+        expected = control(raw, jev, 2., fusion=fusion)
+        if (actual.get('beta') != 2 or controller_fusion(actual) != fusion
+                or actual.get('candidate_logits') != raw['candidate_logits']
                 or actual.get('preprocessing') != raw['preprocessing']
                 or any(not close_values(actual.get(key, []), expected[key]) for key in (
-                    'probabilities', 'qwen_probabilities', 'videojev_probabilities'))):
+                    'probabilities', 'qwen_probabilities', 'videojev_probabilities'))
+                or fusion == 'loglinear' and (
+                    not close_values(actual.get('videojev_logits', []), expected['videojev_logits'])
+                    or actual.get('videojev_logits_source') != expected['videojev_logits_source'])):
             raise ValueError(f'Controller 逐题概率与两份 2 FPS 源及既定公式不符：{row["id"]}')
     comparison_path = Path(controller)/'comparison.json'
     if json.loads(comparison_path.read_text()) != dict(qwen36=metrics['qwen_controller'],
@@ -171,12 +177,13 @@ def summarize(manifest, qwen_baseline, qwen_controller, videojev_baseline, video
         sha256=sha256(Path(directory)/'runtime.json')) for role, directory in paths.items()
         if (Path(directory)/'runtime.json').is_file()}
     note = (f'仅运行 seed{seed} 一次，不估计重复实验均值、方差或显著性。基线各自使用 4 FPS/4096 帧；'
-            'Controller 的 Qwen3.6 和 VideoJev 两源均为 2 FPS/2048 帧，β=2。相同视觉预算不代表严格算力对齐。')
+            f'Controller 的 Qwen3.6 和 VideoJev 两源均为 2 FPS/2048 帧，β=2、fusion={fusion}。'
+            '相同视觉预算不代表严格算力对齐。')
     limitation = '未获得完整 QA 训练清单，无法按视频或问题确认训练与验证集隔离，不能称已验证无训练污染。'
     result = dict(schema='longvideobench_qwen36_single_seed_v1', seed=seed, repetitions=1, n=100,
         split='validation_subset', methods=methods, controller_minus_baseline=differences,
         controller2_minus_qwen2=fusion_gain,
-        protocols=dict(baseline=four, controller=two), beta=2, accuracy_unit='fraction',
+        protocols=dict(baseline=four, controller=two), beta=2, fusion=fusion, accuracy_unit='fraction',
         controller_source_metrics=dict(qwen36=metrics['qwen_controller'], videojev=metrics['videojev_controller']),
         provenance=dict(sample=sample, runs=sources, runtime_files=extra_files,
                         controller_comparison_sha256=sha256(comparison_path)), resource_audits=audits,
@@ -190,8 +197,7 @@ def summarize(manifest, qwen_baseline, qwen_controller, videojev_baseline, video
         lines.append('| '+' | '.join([names[method], '2 FPS/2048' if method == 'jev_as_controller' else '4 FPS/4096',
             str(report['correct']), f'{report["accuracy"]*100:.2f}%',
             *[f'{report["by_duration_group"][str(g)]["accuracy"]*100:.2f}%' for g in GROUPS]])+' |')
-    lines += ['', 'Controller 使用候选内 π₀=softmax(Qwen3.6 首步裸字母 logits)，'
-        'π₁=softmax(log π₀+2×VideoJev候选概率)；FS 不取 log 或再次 softmax。', '',
+    lines += ['', f'Controller 融合模式为 {fusion}，β=2；公式：`{FUSION_FORMULAS[fusion]}`。', '',
         '| Controller2 减指定独立基线4（跨协议） | 准确率差（百分点） | 是否更优 |', '| --- | --- | --- |']
     lines += ['| '+names[method]+f' | {report["accuracy_difference"]*100:+.2f} | '
         +('是' if report['better'] else '否')+' |' for method, report in differences.items()]

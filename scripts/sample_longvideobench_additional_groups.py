@@ -145,7 +145,7 @@ def sample_additional(manifest, reference, original_pattern, out):
         raise ValueError('抽样期间源清单、官方标注或原样本发生变化')
     for path, (text, metadata) in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('x', encoding='utf-8') as handle:
+        with path.open('x', encoding='utf-8', newline='\n') as handle:
             handle.write(text)
         with path.with_suffix('.meta.json').open('x', encoding='utf-8') as handle:
             json.dump(metadata, handle, ensure_ascii=False, allow_nan=False, indent=2)

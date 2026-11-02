@@ -80,7 +80,7 @@ def experiment(tmp_path):
                           (20 if method == 'qwen35' else 30)+20*index)
             make_baseline(baseline_root/f'seed{seed}'/folder, manifest, seed, method, 1.,
                           (40 if method == 'qwen35' else 35)+10*index)
-        evaluate(manifest, original/'qwen', original/'videojev', original/'controller')
+        evaluate(manifest, original/'qwen', original/'videojev', original/'controller', fusion='probability')
     return baseline_root, str(tmp_path/'old'/'seed{seed}')
 
 

@@ -67,7 +67,8 @@ def complete_run(tmp_path, monkeypatch):
                 for target, prediction in zip(targets, predictions):
                     prediction['timing']['question_count'] = sizes[target['video_key']]
                 (directory/'predictions.jsonl').write_text(''.join(json.dumps(p)+'\n' for p in predictions))
-        controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'controller', seed=seed)
+        controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'controller',
+                            seed=seed, fusion='probability')
         summary.summarize_single(manifest, **{role: cell/role for role in summary.ROLES}, out=cell/'summary', seed=seed)
     return base
 
@@ -85,7 +86,8 @@ def test_proportional_metadata_quotas_and_original_modules_unchanged(complete_ru
     assert metadata['identity']['code_sha256']['scripts/eval_longvideobench_proportional_controller.py'] == sha256(controller.__file__)
     # 省略 seed 时读取同一真实比例元数据，不能默认为 42。
     other = complete_run/'seed43'
-    controller.evaluate(other/'sample.jsonl', other/'qwen_controller', other/'videojev_controller', other/'controller_inferred')
+    controller.evaluate(other/'sample.jsonl', other/'qwen_controller', other/'videojev_controller',
+                        other/'controller_inferred', fusion='probability')
     assert json.loads((other/'controller_inferred/run.json').read_text())['seed'] == 43
     report = summary.summarize_single(cell/'sample.jsonl', **{role: cell/role for role in summary.ROLES}, seed=42)
     assert report['schema'] == summary.SINGLE_SCHEMA and report['selected_counts'] == QUOTAS
@@ -191,14 +193,16 @@ def test_controller_rejects_equal_sample_and_wrong_source_seed_protocol(complete
         else:modified['identity']['protocol'][key] = value
         write_json(fs_path, modified)
         with pytest.raises(ValueError):
-            controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'new_controller', seed=42)
+            controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'new_controller',
+                                seed=42, fusion='probability')
         assert not (cell/'new_controller').exists()
     write_json(fs_path, metadata)
     meta = json.loads(manifest.with_suffix('.meta.json').read_text())
     meta['sampling'] = 'equal_official_duration_groups'
     write_json(manifest.with_suffix('.meta.json'), meta)
     with pytest.raises(ValueError):
-        controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'new_controller', seed=42)
+        controller.evaluate(manifest, cell/'qwen_controller', cell/'videojev_controller', cell/'new_controller',
+                            seed=42, fusion='probability')
 
 
 def test_no_legacy_fs2_code_whitelist_and_output_protection(complete_run):

@@ -45,7 +45,7 @@ def read_single(root):
     rows = load_sample(provenance['sample']['path'])
     return dict(report=fresh, question_ids={r['id'] for r in rows}, video_keys={r['video_key'] for r in rows},
         provenance=dict(seed=fresh['seed'], directory=str(root), summary_path=str(path), summary_sha256=sha256(path),
-            protocols=fresh['protocols'], beta=fresh['beta'],
+            protocols=fresh['protocols'], beta=fresh['beta'], fusion=fresh['fusion'],
             summary_script_sha256=saved['script_sha256'], sources=fresh['provenance']))
 
 
@@ -91,7 +91,7 @@ def summarize(runs, out):
             '不代表 300 道互异问题；三次重复不足以支持有力的统计显著性结论。')
     result = dict(schema='longvideobench_qwen36_three_repeats_v1', seeds=[42, 43, 44], repeats=3,
         questions_per_seed=100, split='validation_subset', methods=methods, controller2_minus_qwen2=gain,
-        controller_minus_baseline=cross_protocol, protocols=reports[0]['protocols'], beta=2,
+        controller_minus_baseline=cross_protocol, protocols=reports[0]['protocols'], beta=2, fusion=reports[0]['fusion'],
         accuracy_unit='fraction', gain_unit='accuracy_difference_fraction', variance_unit='accuracy_fraction_squared',
         sample_variance_ddof=1, population_variance_ddof=0, primary_variance='sample_variance',
         controller_source_metrics_by_seed=[dict(seed=r['seed'], **r['controller_source_metrics']) for r in reports],
@@ -101,7 +101,7 @@ def summarize(runs, out):
         script_sha256=sha256(__file__), created_at=datetime.now(timezone.utc).isoformat())
     lines = ['# LongVideoBench：Qwen3.6 三次分层采样对照', '',
         '每个 seed 原样使用 100 道题，四组各 25 道。两条独立基线使用 4 FPS/4096 帧；'
-        'Controller 的 Qwen3.6 与 VideoJev 两源均为 2 FPS/2048 帧，固定 β=2。', '',
+        f'Controller 的 Qwen3.6 与 VideoJev 两源均为 2 FPS/2048 帧，固定 β=2、fusion={result["fusion"]}。', '',
         '| 方法 | 范围 | seed42 | seed43 | seed44 | 均值 | 样本方差（百分点²） | 标准差（百分点） |',
         '| --- | --- | --- | --- | --- | --- | --- | --- |']
     for method, report in methods.items():

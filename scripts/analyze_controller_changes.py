@@ -8,7 +8,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.bench_io import json_bytes, jsonl_bytes, sha256, stratum, write_new
-from scripts.summarize_bench import controlled, read_run
+from scripts.summarize_bench import fusion_mode, read_run
+from scripts.videojev_candidate_logits import candidate_probabilities
 
 
 FILTERS = {
@@ -21,8 +22,8 @@ FILTERS = {
     'third_choice': ('Controller 选择两专家 top-1 之外的选项', lambda r: r['third_choice']),
 }
 NOTE = ('改答、改对、改错均相对 Controller 输入的 Qwen 候选评分结果，非 qwen_native。'
-    'π₀=softmax(z)，Fₛ=VideoJev候选概率，π₁=softmax(z+βFₛ)。'
-    'z+βFₛ 与 log(π₀)+βFₛ 相差题内公共常数，softmax 后相同。'
+    'π₀=softmax(z)，p_J=softmax(s_J)。loglinear 使用 z+βs_J；probability 使用 z+βp_J。'
+    '每题记录实际 fusion 和 videojev_score，历史无模式标记的结果仅按 probability 解释。'
     '所有概率均为该题原始选项内归一化概率，不是全词表概率。')
 
 
@@ -66,8 +67,10 @@ def analyze(manifest, qwen, videojev, controller):
     rows = read_manifest(manifest)
     digest = sha256(manifest)
     (qp, qs, _), (jp, js, _), (cp, cs, _) = [read_run(p, rows, digest, method)
-        for p, method in ((qwen, 'qwen36'), (videojev, 'videojev'), (controller, 'jev_as_controller'))]
+        for p, method in ((qwen, 'qwen36'), (videojev, 'videojev'), (controller, ('jev_as_controller', 'jev_as_controller_loglinear')))]
     identity = cs['identity']
+    fusion = fusion_mode(identity)
+    score_source = identity.get('score_source', identity.get('videojev_score_source', 'auto'))
     beta = identity.get('beta')
     if type(beta) not in (int, float) or not math.isfinite(beta) or beta < 0:
         raise ValueError('Controller beta 必须是非负有限数值')
@@ -92,12 +95,17 @@ def analyze(manifest, qwen, videojev, controller):
         audit = q.get('preprocessing')
         if not isinstance(audit, dict) or not audit or audit != j.get('preprocessing') or audit != c.get('preprocessing'):
             raise ValueError(f'三份结果预处理不一致：{key}')
-        probabilities, index = controlled(q, j, beta)
+        from scripts.eval_bench_controller import control
+        recomputed = control(q, j, beta, fusion=fusion, score_source=score_source)
+        if 'fusion' in c and c['fusion'] != fusion:
+            raise ValueError(f'逐题 fusion 与运行模式不一致：{key}')
+        probabilities, index = recomputed['probabilities'], recomputed['answer_index']
+        j_probabilities, j_scores = candidate_probabilities(j), recomputed['videojev_scores']
         if index != c['answer_index'] or any(not math.isclose(p, v, rel_tol=1e-7, abs_tol=1e-7)
                 for p, v in zip(probabilities, c['probabilities'])):
             raise ValueError(f'Controller 概率无法由输入按公式重算：{key}')
         for field, values in (('candidate_logits', q['candidate_logits']),
-                ('qwen_probabilities', q['probabilities']), ('videojev_probabilities', j['probabilities'])):
+                ('qwen_probabilities', q['probabilities']), ('videojev_probabilities', j_probabilities)):
             saved = c.get(field)
             if not isinstance(saved, list) or len(saved) != len(values) or any(
                     type(x) not in (int, float) or not math.isfinite(x)
@@ -114,7 +122,7 @@ def analyze(manifest, qwen, videojev, controller):
         def choice(i):
             return dict(index=i, letter=chr(65+i), text=row['options'][i])
 
-        records.append(dict(id=key, benchmark=row['benchmark'], seed=seed, stratum=stratum(row),
+        records.append(dict(id=key, benchmark=row['benchmark'], seed=seed, stratum=stratum(row), fusion=fusion,
             video_key=row['video_key'], query=row['query'], options=row['options'], gold=choice(gold),
             qwen=choice(qi), videojev=choice(ji), controller=choice(ci),
             qwen_correct=qhit, videojev_correct=jhit, controller_correct=chit,
@@ -123,11 +131,11 @@ def analyze(manifest, qwen, videojev, controller):
             harmed_vs_videojev=jhit and not chit, third_choice=ci not in (qi, ji), beta=beta,
             per_option=[dict(index=i, letter=chr(65+i), text=option,
                 qwen_logit=q['candidate_logits'][i], qwen_probability=q['probabilities'][i],
-                videojev_probability=j['probabilities'][i], correction=beta*j['probabilities'][i],
-                fused_score=q['candidate_logits'][i]+beta*j['probabilities'][i],
+                videojev_probability=j_probabilities[i], videojev_score=j_scores[i], correction=beta*j_scores[i],
+                fused_score=q['candidate_logits'][i]+beta*j_scores[i],
                 controller_probability=c['probabilities'][i]) for i, option in enumerate(row['options'])]))
     return records, dict(manifest=str(Path(manifest).resolve()), manifest_sha256=digest,
-        seed=seed, benchmark=rows[0]['benchmark'], beta=beta, protocol=protocol,
+        seed=seed, benchmark=rows[0]['benchmark'], beta=beta, fusion=fusion, protocol=protocol,
         sources=dict(qwen=qs, videojev=js, controller=cs))
 
 
@@ -152,15 +160,15 @@ def detail_markdown(records, title):
         '表中概率为 0–1 小数；显示 9 位小数，JSONL 保留原始精度。', '']
     for r in records:
         lines += [f'## seed {r["seed"]} · {escape(r["id"])}', '',
-            f'分层：{escape(r["stratum"])}；类型：{r["change_type"]}；β={r["beta"]}。', '',
+            f'分层：{escape(r["stratum"])}；类型：{r["change_type"]}；fusion={r["fusion"]}；β={r["beta"]}。', '',
             escape(r['query']), '',
             f'正确答案：{r["gold"]["letter"]}；Qwen：{r["qwen"]["letter"]}；'
             f'VideoJev：{r["videojev"]["letter"]}；Controller：{r["controller"]["letter"]}。', '',
-            '| 选项 | 内容 | Qwen z | Qwen π₀ | VideoJev Fₛ | βFₛ | 融合分数 z+βFₛ | Controller π₁ |',
-            '|---|---|---:|---:|---:|---:|---:|---:|']
+            '| 选项 | 内容 | Qwen z | Qwen π₀ | VideoJev p_J | 实际融合分数 s | βs | 融合分数 z+βs | Controller π₁ |',
+            '|---|---|---:|---:|---:|---:|---:|---:|---:|']
         for p in r['per_option']:
             values = ' | '.join(f'{p[k]:.9f}' for k in ('qwen_logit', 'qwen_probability',
-                'videojev_probability', 'correction', 'fused_score', 'controller_probability'))
+                'videojev_probability', 'videojev_score', 'correction', 'fused_score', 'controller_probability'))
             lines.append(f'| {p["letter"]} | {escape(p["text"])} | {values} |')
         lines.append('')
     return '\n'.join(lines)
@@ -181,6 +189,8 @@ def export(jobs, out):
         runs.append(dict(source, counts=counts(items)))
     if not records or len({r['benchmark'] for r in records}) != 1:
         raise ValueError('每次导出需要同一数据集的非空运行列表')
+    if len({r['fusion'] for r in records}) != 1:
+        raise ValueError('同次分析不可混用不同融合模式')
     summary = dict(schema='controller_answer_changes_v1', benchmark=records[0]['benchmark'],
         counts=counts(records), runs=runs, definitions=NOTE, analyzer_sha256=sha256(__file__))
     lines = ['# Controller 逐题变化统计', '', NOTE, '',

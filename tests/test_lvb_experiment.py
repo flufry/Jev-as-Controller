@@ -98,11 +98,19 @@ def test_videojev_labels_never_reach_predict_features(monkeypatch):
     target = row()
     seen = {}
     monkeypatch.setattr(timejev.rgb_media, 'preprocess', lambda *_: [torch.zeros(8, 3)])
-    def fake_predict(_processor, features, record, questions, **kwargs):
-        seen['questions'] = questions
-        assert features.shape == (2, 3)
-        return [dict(id=target['id'], probabilities=[.2, .8])]
-    model = SimpleNamespace(encode_video=lambda *_: torch.zeros(2, 3), predict_features=fake_predict)
+    class Model(torch.nn.Module):
+        def encode_video(self, *_):
+            return torch.zeros(2, 3)
+
+        def forward(self):
+            return SimpleNamespace(logits=torch.tensor([[0., 1.]]), score_mask=torch.tensor([[True, True]]))
+
+        def predict_features(self, _processor, features, record, questions, **kwargs):
+            seen['questions'] = questions
+            assert features.shape == (2, 3)
+            output = self()
+            return [dict(id=target['id'], probabilities=output.logits[0].softmax(-1).tolist())]
+    model = Model()
     result = predict_group(model, object(), [target], dict(grid_thw=[2, 2, 2]), 262144)
     assert result[0]['id'] == target['id']
     assert set(seen['questions'][0]) == {'id', 'task', 'query', 'options'}

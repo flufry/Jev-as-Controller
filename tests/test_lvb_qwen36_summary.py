@@ -84,7 +84,8 @@ def experiment(tmp_path):
             ('videojev_baseline', 'videojev', 4., 75), ('videojev_controller', 'videojev', 2., 72)):
         paths[role] = tmp_path/role
         make_source(paths[role], manifest, checkpoints[method], method, fps, hits)
-    evaluate(manifest, paths['qwen_controller'], paths['videojev_controller'], paths['controller'], qwen_method='qwen36')
+    evaluate(manifest, paths['qwen_controller'], paths['videojev_controller'], paths['controller'],
+             qwen_method='qwen36', fusion='probability')
     return paths
 
 
@@ -115,6 +116,22 @@ def test_single_seed_scores_source_gain_and_resources(experiment):
     assert '仅运行 seed42 一次' in markdown
     with pytest.raises(FileExistsError):
         summarize(**experiment)
+
+
+def test_default_loglinear_sources_are_revalidated_and_reported(experiment):
+    for role in ('videojev_baseline', 'videojev_controller'):
+        path = experiment[role]/'predictions.jsonl'
+        predictions = [json.loads(line) for line in path.read_text().splitlines()]
+        for prediction in predictions:
+            prediction['logits'] = [0. if p else -1000. for p in prediction['probabilities']]
+        write_jsonl(predictions, path)
+    shutil.rmtree(experiment['controller'])
+    evaluate(experiment['manifest'], experiment['qwen_controller'], experiment['videojev_controller'],
+             experiment['controller'], qwen_method='qwen36')
+    result = summarize(**experiment)
+    assert result['fusion'] == 'loglinear' and result['beta'] == 2.
+    assert result['methods']['jev_as_controller']['accuracy'] == .72
+    assert 'loglinear' in (experiment['out']/'results.md').read_text()
 
 
 @pytest.mark.parametrize('kind', ['fps', 'context', 'method', 'model', 'settings', 'packages', 'code',
@@ -174,7 +191,7 @@ def test_wrong_controller_sources_or_math_rejected(experiment, kind):
     if kind == 'four_fps_sources':
         shutil.rmtree(directory)
         evaluate(experiment['manifest'], experiment['qwen_baseline'], experiment['videojev_baseline'],
-                 directory, qwen_method='qwen36')
+                 directory, qwen_method='qwen36', fusion='probability')
     elif kind == 'source_hash':
         path = directory/'run.json'
         run = json.loads(path.read_text())
@@ -217,7 +234,7 @@ def test_four_b_checkpoint_cannot_be_relabelled_qwen36(experiment):
     # 来源也重新生成，使失败来自模型架构检查而非陈旧 Controller 哈希。
     shutil.rmtree(experiment['controller'])
     evaluate(experiment['manifest'], experiment['qwen_controller'], experiment['videojev_controller'],
-             experiment['controller'], qwen_method='qwen36')
+             experiment['controller'], qwen_method='qwen36', fusion='probability')
     with pytest.raises(ValueError, match='不能冒充原 4B 模型'):
         summarize(**experiment)
 
@@ -234,7 +251,8 @@ def test_other_original_seeds_are_supported(experiment, tmp_path, seed):
         args[role] = root/role
         make_source(args[role], manifest, Path(identity['checkpoint']['path']), identity['method'],
                     identity['protocol']['fps'], 50, seed=seed)
-    evaluate(manifest, args['qwen_controller'], args['videojev_controller'], args['controller'], qwen_method='qwen36')
+    evaluate(manifest, args['qwen_controller'], args['videojev_controller'], args['controller'],
+             qwen_method='qwen36', fusion='probability')
     result = summarize(**args)
     assert result['seed'] == seed
     assert result['provenance']['sample']['seed'] == seed

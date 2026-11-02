@@ -195,6 +195,7 @@ def build_all(base):
         shared_videos=len(set(a['video_keys']) & set(b['video_keys']))) for a, b in itertools.combinations(entries, 2)]
     trial_text = ''.join(json.dumps(trial, ensure_ascii=False, allow_nan=False)+'\n' for trial in trials)
     result = dict(schema=ALL_SCHEMA, seeds=list(SEEDS), questions_per_seed=100, repeats_per_random_selection=50,
+        fusion=fingerprints['controller']['fusion'],
         **sampling['strata'], methods={method: accuracy_statistics([entry['accuracies'][method] for entry in entries]) for method in METHODS},
         by_seed=entries, same_protocol_fusion_gain=difference_statistics([entry['controller2_minus_qwen2'] for entry in entries]),
         overlaps=overlaps, unique_questions=len(set().union(*(set(entry['question_ids']) for entry in entries))),
@@ -218,7 +219,7 @@ def summarize_all(base, out=None):
     output.mkdir(parents=True)
     write_json(output/'results.json', result)
     (output/'results.md').write_text(markdown, encoding='utf-8')
-    (output/'random_trials.jsonl').write_text(trials, encoding='utf-8')
+    (output/'random_trials.jsonl').write_text(trials, encoding='utf-8', newline='\n')
     return result
 
 

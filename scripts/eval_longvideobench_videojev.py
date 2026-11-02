@@ -10,7 +10,7 @@ from timejev.lvb_experiment import (
 )
 
 
-def predict_group(model, processor, rows, record, context, *, save_logits=False):
+def predict_group(model, processor, rows, record, context, *, save_logits=True, logits_only=False):
     import torch
     from timejev.rgb_media import preprocess
 
@@ -22,24 +22,49 @@ def predict_group(model, processor, rows, record, context, *, save_logits=False)
             features.append(model.encode_video(chunk, grid))
         features = torch.cat(features)
         questions = [{k: row[k] for k in ('id', 'task', 'query', 'options')} for row in rows]
-        if save_logits:
+        if logits_only:
             from scripts.videojev_candidate_logits import predict_features_with_logits
-            predictions = predict_features_with_logits(model, processor, features, record, questions, context)
+            predictions = predict_features_with_logits(model, processor, features, record, questions, context,
+                                                       logits_only=True)
+        elif save_logits:
+            # Match upstream's native prediction path, retaining scores across packed forwards.
+            logits = []
+
+            def retain_logits(module, inputs, output):
+                for values, mask in zip(output.logits, output.score_mask):
+                    logits.append(values[:int(mask.sum())].float().cpu().tolist())
+
+            handle = model.register_forward_hook(retain_logits)
+            try:
+                predictions = model.predict_features(processor, features, record, questions, context=context)
+            finally:
+                handle.remove()
+            if ([p['id'] for p in predictions] != [row['id'] for row in rows]
+                    or len(logits) != len(predictions)):
+                raise ValueError('VideoJev 原始 logits 与问题输出未完整对齐')
+            for prediction, values in zip(predictions, logits):
+                if len(values) != len(prediction['probabilities']):
+                    raise ValueError('VideoJev 原始 logits 与候选概率数量不一致')
+                prediction['logits'] = values
         else:
             predictions = model.predict_features(processor, features, record, questions, context=context)
     return predictions
 
 
-def main(argv=None, *, save_logits=False):
-    args = evaluation_parser(__doc__, 'models/VideoJev-4B').parse_args(argv)
+def main(argv=None, *, save_logits=True, logits_only=False):
+    if logits_only and not save_logits:
+        raise ValueError('logits_only requires saving raw logits')
+    description = 'VideoJev raw-logit evaluation for Video-MME / MLVU / LVBench.' if logits_only else __doc__
+    args = evaluation_parser(description, 'models/VideoJev-4B').parse_args(argv)
     settings = dict(scoring='direct_candidate_softmax', question_grouping='shared_video_prefix_without_answers')
     if save_logits:
         from scripts.videojev_candidate_logits import validate_logits
         from timejev.lvb_experiment import sha256
-        paths = ['scripts/videojev_candidate_logits.py', 'scripts/eval_bench_videojev_logits.py',
+        paths = ['scripts/videojev_candidate_logits.py', 'scripts/eval_bench_videojev.py',
                  'videojev_hf/processing_videojev.py']
         root = Path(__file__).resolve().parents[1]
-        settings.update(candidate_scores='head_logits_before_candidate_softmax',
+        settings.update(scoring='candidate_logits_argmax' if logits_only else 'direct_candidate_softmax',
+            candidate_scores='head_logits_before_candidate_softmax', output_scores='logits_only' if logits_only else 'logits_and_probabilities',
             logits_adapter_sha256={p: sha256(root/p) for p in paths})
     run = Experiment(args, 'videojev', settings)
     if save_logits:
@@ -79,8 +104,8 @@ def main(argv=None, *, save_logits=False):
                                 fps=args.fps, max_frames=args.max_frames)
         torch.cuda.synchronize(args.device)
         group_started = time.perf_counter()
-        predictions = predict_group(model, processor, rows, record, args.context, save_logits=True) if save_logits else \
-            predict_group(model, processor, rows, record, args.context)
+        predictions = predict_group(model, processor, rows, record, args.context,
+                                    save_logits=save_logits, logits_only=logits_only)
         torch.cuda.synchronize(args.device)
         group_seconds = time.perf_counter() - group_started
         by_id = {p['id']: p for p in predictions}
@@ -90,8 +115,8 @@ def main(argv=None, *, save_logits=False):
             if row['id'] not in run.done:
                 details = {}
                 if save_logits:
-                    details['candidate_logits'] = validate_logits(by_id[row['id']], len(row['options']))
-                run.append(row, by_id[row['id']]['probabilities'], **details, preprocessing=record_audit(record),
+                    details['logits'] = validate_logits(by_id[row['id']], len(row['options']))
+                run.append(row, by_id[row['id']].get('probabilities'), **details, preprocessing=record_audit(record),
                            timing=dict(video_group_total_seconds=group_seconds,
                                        question_count=len(rows)))
     run.finish()

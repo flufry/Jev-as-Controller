@@ -1,4 +1,4 @@
-"""比例抽样清单的双 2 FPS Jev-as-Controller；仅适配元数据，复用原公式与逐题校验。"""
+"""比例抽样清单的双 2 FPS Jev-as-Controller；默认 log-linear，保留历史概率模式。"""
 import argparse
 from copy import deepcopy
 import importlib.util
@@ -24,7 +24,7 @@ def load_original(path, name):
     return module
 
 
-def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', seed=None):
+def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', seed=None, fusion='loglinear'):
     if type(beta) not in (int, float) or beta != 2 or qwen_method != 'qwen36':
         raise ValueError('比例抽样实验固定 Qwen3.6、beta=2')
     manifest = Path(manifest).resolve()
@@ -57,7 +57,7 @@ def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', seed=
     legacy.load_sample = lambda path: rows if Path(path).resolve() == manifest else read_sample(path, seed=seed, n=100)[0]
     legacy.read_source = read_source
     legacy.write_json = save
-    return legacy.evaluate(manifest, qwen, videojev, out, beta=beta, qwen_method=qwen_method)
+    return legacy.evaluate(manifest, qwen, videojev, out, beta=beta, qwen_method=qwen_method, fusion=fusion)
 
 
 def main():
@@ -67,6 +67,7 @@ def main():
     parser.add_argument('--videojev', required=True)
     parser.add_argument('--out', required=True)
     parser.add_argument('--beta', type=float, default=2.)
+    parser.add_argument('--fusion', choices=('loglinear', 'probability'), default='loglinear')
     parser.add_argument('--qwen-method', choices=('qwen36',), default='qwen36')
     parser.add_argument('--seed', type=int, choices=(42, 43, 44))
     print(json.dumps(evaluate(**vars(parser.parse_args())), ensure_ascii=False, indent=2))

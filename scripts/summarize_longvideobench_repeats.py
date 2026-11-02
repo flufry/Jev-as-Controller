@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.eval_longvideobench_controller import control, read_source
+from scripts.eval_longvideobench_controller import control, controller_fusion, read_source
 from timejev.longvideobench_benchmark import DURATION_NAMES
 from timejev.lvb_experiment import GROUPS, load_sample, sha256, write_json
 
@@ -39,7 +39,10 @@ def fingerprint(identity, method):
     if method != 'jev_as_controller' and (not identity['checkpoint'].get('files')
             or not identity['packages'] or not identity['code_sha256']):
         raise ValueError(f'{method} 的模型、代码或依赖指纹为空')
-    return {key: identity[key] for key in keys}
+    result = {key: identity[key] for key in keys}
+    if method == 'jev_as_controller':
+        result['fusion'] = controller_fusion(identity)
+    return result
 
 
 def close_values(left, right):
@@ -75,6 +78,7 @@ def read_repeat(directory):
         if method != 'jev_as_controller' and identities[method].get('seed') != metadata['seed']:
             raise ValueError(f'基线 seed 与抽样元数据不一致：{directory/folder}')
     controller = identities['jev_as_controller']
+    fusion = controller_fusion(controller)
     protocol = identities['qwen35']['protocol']
     if any(identity['protocol'] != protocol for identity in identities.values()):
         raise ValueError(f'同一次三种方法的协议不一致：{directory}')
@@ -91,8 +95,8 @@ def read_repeat(directory):
             'qwen': sources['qwen'], 'videojev': sources['videojev']}):
         raise ValueError(f'控制器 beta 或对应基线来源指纹错误：{directory}')
     saved_metrics = json.loads((directory/'controller/metrics.json').read_text())
-    if saved_metrics.get('beta') != 2:
-        raise ValueError(f'控制器 metrics 中的 beta 错误：{directory}')
+    if saved_metrics.get('beta') != 2 or controller_fusion(saved_metrics) != fusion:
+        raise ValueError(f'控制器 metrics 中的 beta 或融合模式错误：{directory}')
     for row in rows:
         raw, jev, actual = [predictions[method][row['id']] for method in METHODS]
         if (not isinstance(raw.get('preprocessing'), dict) or not raw['preprocessing']
@@ -104,11 +108,15 @@ def read_repeat(directory):
                 or source.get('identity') != {key: identity[key] for key in ('path', 'bytes', 'mtime_ns')}
                 or Path(identity['path']).resolve() != Path(row['video_path']).resolve()):
             raise ValueError(f'逐题预处理源身份与媒体指纹不一致：{row["id"]}')
-        expected = control(raw, jev, 2)
-        if (actual.get('beta') != 2 or actual.get('preprocessing') != raw['preprocessing']
+        expected = control(raw, jev, 2, fusion=fusion)
+        if (actual.get('beta') != 2 or controller_fusion(actual) != fusion
+                or actual.get('preprocessing') != raw['preprocessing']
                 or actual.get('candidate_logits') != raw['candidate_logits']
                 or any(not close_values(actual.get(key, []), expected[key]) for key in (
-                    'probabilities', 'qwen_probabilities', 'videojev_probabilities'))):
+                    'probabilities', 'qwen_probabilities', 'videojev_probabilities'))
+                or fusion == 'loglinear' and (
+                    not close_values(actual.get('videojev_logits', []), expected['videojev_logits'])
+                    or actual.get('videojev_logits_source') != expected['videojev_logits_source'])):
             raise ValueError(f'控制器预测与源概率及既定公式不符：{row["id"]}')
     comparison_path = directory/'controller/comparison.json'
     if json.loads(comparison_path.read_text()) != metrics:
@@ -120,7 +128,7 @@ def read_repeat(directory):
         files_sha256={str(path.relative_to(directory)): sha256(path) for path in files},
         media_content={key: {field: value[field] for field in ('bytes', 'sha256')} for key, value in media.items()},
         source_annotations={key: metadata[key]['sha256'] for key in ('source_manifest', 'source_reference')})
-    return dict(provenance=provenance, metrics=metrics,
+    return dict(provenance=provenance, metrics=metrics, fusion=fusion,
         fingerprints={method: fingerprint(identity, method) for method, identity in identities.items()},
         question_ids={row['id'] for row in rows}, video_keys={row['video_key'] for row in rows})
 
@@ -160,7 +168,7 @@ def summarize(runs, out):
     limitation = ('未获得完整 QA 训练清单，无法按视频或问题确认训练与本验证集隔离；'
                   '不能称已验证无训练污染。')
     result = dict(schema='longvideobench_three_stratified_repeats_v1', repeats=3, questions_per_repeat=100,
-        split='validation_subset', sampling='equal_official_duration_groups', beta=2,
+        split='validation_subset', sampling='equal_official_duration_groups', beta=2, fusion=repeats[0]['fusion'],
         accuracy_unit='fraction', variance_unit='accuracy_fraction_squared', std_unit='accuracy_fraction',
         primary_variance='sample_variance', sample_variance_ddof=1, population_variance_ddof=0,
         methods=methods, provenance=[r['provenance'] for r in repeats], overlaps=overlaps,
@@ -170,7 +178,7 @@ def summarize(runs, out):
         created_at=datetime.now(timezone.utc).isoformat(), script_sha256=sha256(__file__))
     seeds = [repeat['provenance']['seed'] for repeat in repeats]
     lines = ['# LongVideoBench 三次分层采样对比', '',
-        '每次 100 道题，官方四个时长组各 25 道；固定模型、协议及控制器 β=2。', '',
+        f'每次 100 道题，官方四个时长组各 25 道；固定模型、协议及控制器 β=2、fusion={result["fusion"]}。', '',
         '| 方法 | 范围 | '+ ' | '.join(f'seed {seed}' for seed in seeds)
         +' | 均值 | 样本方差（百分点²） | 样本标准差（百分点） |',
         '| --- | --- | --- | --- | --- | --- | --- | --- |']

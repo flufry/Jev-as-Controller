@@ -256,7 +256,7 @@ def save_group(out, payload, reuse=False):
     out.mkdir(parents=True)
     write_json(out/'results.json', result)
     (out/'results.md').write_text(markdown, encoding='utf-8')
-    (out/'random_trials.jsonl').write_text(trials, encoding='utf-8')
+    (out/'random_trials.jsonl').write_text(trials, encoding='utf-8', newline='\n')
     return result
 
 

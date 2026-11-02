@@ -1,101 +1,128 @@
-# 13 · VideoJev 原始 logits 与 log-linear 融合
+# 13 · 对齐官方：VideoJev 原始 logits 与两种 Controller 融合
 
-新增独立接口，公式为：
+已对齐官方 main 提交 `3a26780` 的融合实现，统一由 `eval_bench_controller.py` 调用。MLVU 和 LVBench 可以使用同一套命令。
 
-```text
-z0 = Qwen 首步候选字母 logits
-Fs = VideoJev head 的原始候选分数（softmax 前）
-ps = softmax(Fs)
-旧：pi1 = softmax(z0 + beta * ps)
-新：pi1 = softmax(z0 + beta * Fs)
-等效：pi1_i ∝ pi0_i * ps_i**beta
-```
+## 当前入口与分数定义
 
-新方法标识为 `jev_as_controller_loglinear`。原 `eval_bench_controller.py` 保持概率融合；不要把新方法的结果目录覆盖到旧 Controller 目录。β=2 只作为本次固定起点，两套分数尺度不同，不保证新方法更好。
+| 入口 | 当前行为 |
+|---|---|
+| `eval_bench_videojev.py` | 保存 softmax 前的 `logits`，直接 argmax 计分，不保存归一化概率 |
+| `eval_bench_qwen36_logits.py` | 保存 Qwen 首步裸候选字母 `candidate_logits`，作为 Controller 输入 |
+| `eval_bench_controller.py` | 默认 `--fusion loglinear --beta 2` |
+| `eval_bench_qwen36.py` / `eval_bench_qwen36_native.py` | 完整生成后解析；是独立基线，不是 Controller 的 logits 来源 |
 
-## 1. 新增 VideoJev 原始分数接口
+`eval_bench_videojev_logits.py` 和 `eval_bench_controller_loglinear.py` 保留为兼容入口，共享主实现；不用再维护两套不同的融合代码。
 
-在服务器容器内、仓库根目录执行。视频采样、分组、checkpoint 和 seed 应与 Qwen logits 输入完全一致：
-
-```bash
-BENCH=videomme
-M=runs/screen/$BENCH/sample_42.jsonl
-
-CUDA_VISIBLE_DEVICES=7 python scripts/eval_bench_videojev_logits.py \
-  --manifest "$M" --out "runs/screen/$BENCH/videojev_logits" \
-  --checkpoint models/VideoJev-4B --seed 42 --device cuda:0 \
-  --fps 2 --max-frames 2048 --context 262144 \
-  --visual-token-budget 24576 --memory-fraction .9
-```
-
-新增预测字段 `candidate_logits` 保存真实 head logits，同时保留原 `probabilities`、选项、preprocessing 等。method 仍为 `videojev`，`settings.candidate_scores=head_logits_before_candidate_softmax` 区分输出类型。保存前和恢复时检查 `softmax(candidate_logits)` 与概率一致。新增适配器源码 SHA 纳入指纹并保存源码副本；首次使用新输出目录，之后恢复可原命令加 `--resume`。
-
-这个入口直接调用已有模型 forward 返回的 `output.logits`，不修改 head、不从概率猜测分数。它使用当前仓库的输入分组/格式化适配器，因此已经下载的旧 VideoJev checkpoint 也可使用，**不需要手动覆盖模型目录的 Python 文件或重新导出权重**。
-
-HF 源码接口也增加可选 `return_logits=True`：
-
-```python
-answers = model.predict_features(processor, features, record, questions,
-    context=262144, return_logits=True)
-# 或 model.predict_video(..., return_logits=True)
-```
-
-该可选参数需要加载含本次源码的新导出模型；已有旧模型用上面的评测入口即可。默认 False 保持原预测格式，选择题只导出有效选项分数，不包含 padding；grounding 逻辑不变。
-
-## 2. 用真实原始分数融合（CPU 即可）
-
-Qwen 仍使用 `eval_bench_qwen36_logits.py` 的结果，不能使用 native 文本生成结果：
-
-```bash
-python scripts/eval_bench_controller_loglinear.py \
-  --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" \
-  --videojev "runs/screen/$BENCH/videojev_logits" \
-  --score-source raw_logits --beta 2 \
-  --out "runs/screen/$BENCH/controller_loglinear"
-```
-
-默认 `--score-source raw_logits`，缺少原始分数时明确报错，不自动切换算法。融合接口可对同协议的2 FPS或4 FPS结果运行，不强行要求2 FPS，但两输入的完整协议、清单 SHA、seed、逐题预处理必须一致。清单中的媒体路径在本地无需存在，可分析复制下来的结果。
-
-输出 `run.json / metrics.json / comparison.json / predictions.jsonl / source/`。逐题记录 `videojev_scores`、`videojev_score_source`、`fused_logits`、两专家概率、融合概率和最终选项；metrics 包含相对 Qwen 的改对/改错/改答，MLVU 用七任务 M-Avg，LVBench 保留多标签类别统计。记录来源 SHA 和实际 β，拒绝覆盖已有输出。
-
-原 `summarize_bench.py`、`analyze_controller_changes.py` 目前专用于旧 β·ps 融合，会拒绝新方法。新方法先查看自己的 `metrics.json / comparison.json` 和逐题预测，不要混用旧汇总脚本。
-
-## 3. 复用已经保存的 VideoJev 概率
-
-若 `ps=softmax(Fs)` 且全部 ps>0，则 `log(ps)=Fs-logsumexp(Fs)`。后项对同一道题所有选项相同，因此：
+统一记号：`z_Q` 是 Qwen 原始候选 logits，`s_J` 是 VideoJev 原始候选 logits，`p_J=softmax(s_J)`。
 
 ```text
-softmax(z0 + beta * log(ps)) = softmax(z0 + beta * Fs)
+默认新方法：pi = softmax(z_Q + 2 * s_J)           --fusion loglinear
+显式旧方法：pi = softmax(z_Q + 2 * softmax(s_J))  --fusion probability
 ```
 
-这使现有结果也能验证新融合，**无需重跑 VideoJev 或 Qwen**。显式指定 `--score-source log_probabilities`；记录将标为归一化分数，不冒充原始 head logits。保存概率的浮点舍入可能带来微小数值误差。若任何候选概率为0则拒绝，不使用 epsilon 裁剪替代；应运行第1节重新导出原始分数。
+旧方法在 CPU 融合时单独计算 VideoJev 的 softmax；只需一次 Jev GPU 推理即可评测两种公式。Jev 单模型用 `argmax(s_J)`，与理想精度下 `argmax(softmax(s_J))` 相同。新方法不会把概率当原始 logits 加入 Qwen。
 
-当前本地已有结果，PowerShell 批量三个 seed：
+新预测字段名采用官方的 `logits`。读取端兼容之前新增接口保存的 `candidate_logits`。旧结果只有概率时，官方的兼容规则是：各概率严格大于0才可用 `log(p_J)` 恢复等效分差；含0时拒绝 log-linear，不裁剪。可传 `--score-source raw_logits` 强制要求真实原始分数。
 
-```powershell
-foreach ($s in 42,43,44) {
-    $suffix = if ($s -eq 42) { '' } else { "_$s" }
-    python -X utf8 scripts/eval_bench_controller_loglinear.py `
-      --manifest "D:/cmder/runs/sample_$s.jsonl" `
-      --qwen "D:/cmder/runs/qwen_logits$suffix" `
-      --videojev "D:/cmder/runs/videojev$suffix" `
-      --score-source log_probabilities --beta 2 `
-      --out "runs/analysis/videomme_loglinear_beta2_seed$s"
-}
+已有旧 checkpoint 可直接使用，不需替换 `models/VideoJev-4B` 中的源码或重下权重。跨 bench 入口直接读取已有模型 forward 的原始 head 输出。模型内部可能仍生成概率，但本入口不读取它、不把它作为评测或默认融合分数。
+
+## MLVU / LVBench 完整测试命令
+
+以下在服务器容器内、仓库根目录 Bash 执行。数据下载和完整清单构建沿用 05/09；如果已有 `questions.jsonl`，不要重复构建覆盖。
+
+```bash
+python scripts/build_bench_manifest.py --bench mlvu --base data/benchmarks/mlvu
+python scripts/build_bench_manifest.py --bench lvbench --base data/benchmarks/lvbench \
+  --annotation data/benchmarks/lvbench/video_info.meta.jsonl
 ```
 
-上面输出目录在本次验证中已生成；重复执行请改新目录名。本次仅固定 β=2，没有按子集测试结果选 β：
+下面先测 MLVU；把 `BENCH=mlvu` 改成 `BENCH=lvbench` 即可测另一数据集。GPU 与每卡预算按实际空闲资源修改。首次使用全新 `RUN_ROOT`；三 seed 各有独立目录，结果不会覆盖。
 
-| seed | Qwen logits | 旧 β·ps 融合 | 新 β·Fs 等效融合 | 新方法相对Qwen改对/改错 |
-|---|---:|---:|---:|---|
-| 42 | 117/150 | 120/150 | 124/150 | 10/3 |
-| 43 | 123/150 | 122/150 | 122/150 | 6/7 |
-| 44 | 119/150 | 118/150 | 115/150 | 6/10 |
-| 合计题次 | 359/450（79.78%） | 360/450（80.00%） | 361/450（80.22%） | 22/20 |
+```bash
+set -euo pipefail
+source scripts/env_qwen36.sh
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
-新方法比旧方法合计只多对1题，seed44反而下降，尚不足以说明稳定提升；不同seed包含重复题，450为题次。新公式消除了概率修正幅度的上限，但也可能放大错误且自信的VideoJev分数，β和分数校准仍需独立开发集确定。
+BENCH=mlvu
+RUN_ROOT=runs/screen/$BENCH/aligned_v2
+QWEN_GPUS=0,1,3,4
+QWEN_MEMORY=40,20,40,40
+JEV_GPU=7
 
-## 4. 验证范围
+for SEED in 42 43 44; do
+  R=$RUN_ROOT/seed$SEED
+  M=$R/sample.jsonl
 
-CPU回归覆盖原始分数导出和padding排除、旧checkpoint forward适配器、原始/归一化分数等效性、公共常数不变性、β=0、概率/logits一致性、零概率拒绝、清单与预处理校验以及旧融合流程。真实GPU评测接口仍需在服务器做小样本验收；本地三seed新方法结果来自已保存概率的等效复算。
+  if [ "$BENCH" = mlvu ]; then
+    python scripts/sample_bench_subset.py --bench mlvu --seed "$SEED" \
+      --per-task 20 --out "$M"
+  else
+    python scripts/sample_bench_subset.py --bench lvbench --seed "$SEED" \
+      --n 150 --proportional --out "$M"
+  fi
+
+  python scripts/check_bench_inputs.py --manifest "$M" --budget --out "$R/input_audit.json"
+
+  CUDA_VISIBLE_DEVICES=$JEV_GPU python scripts/eval_bench_videojev.py \
+    --manifest "$M" --out "$R/videojev_logits" --checkpoint models/VideoJev-4B \
+    --seed "$SEED" --device cuda:0 --fps 2 --max-frames 2048 \
+    --context 262144 --visual-token-budget 24576 --memory-fraction .9
+
+  CUDA_VISIBLE_DEVICES=$QWEN_GPUS python scripts/eval_bench_qwen36_logits.py \
+    --manifest "$M" --out "$R/qwen_logits" --checkpoint models/Qwen3.6-35B-A3B \
+    --seed "$SEED" --device cuda:0 --gpu-count 4 \
+    --max-memory-gib-per-gpu "$QWEN_MEMORY" \
+    --fps 2 --max-frames 2048 --context 262144 \
+    --visual-token-budget 24576 --memory-fraction .9
+
+  # CPU：两种公式复用完全相同的模型结果，各自保存结果和诊断。
+  for FUSION in loglinear probability; do
+    python scripts/eval_bench_controller.py --manifest "$M" \
+      --qwen "$R/qwen_logits" --videojev "$R/videojev_logits" \
+      --fusion "$FUSION" --beta 2 --out "$R/controller_$FUSION"
+
+    python scripts/summarize_bench.py --manifest "$M" \
+      --qwen "$R/qwen_logits" --videojev "$R/videojev_logits" \
+      --controller "$R/controller_$FUSION" --out "$R/summary_$FUSION" \
+      --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed "$SEED"
+  done
+done
+```
+
+已有同一题集时，跳过抽题/预检，令 `M` 指向已有清单；不要为了升级融合重新抽题。已有 Qwen logits 可复用。新 Jev 输出统一保存 raw logits；不要将 native Qwen 文本生成目录传给融合。
+
+中断恢复时，不要从头重跑上面的整个循环：用当前 seed 的同一条模型评测命令增加 `--resume`；抽样、预算预检、CPU 融合及汇总都拒绝覆盖已有文件。此次源码与输出格式均已变化，旧模型目录不能强制 `--resume`，应另选新目录。
+
+## 独立 4 FPS 基线
+
+如果要延续既有报告的独立基线，另跑 Qwen native 和 VideoJev 4 FPS，不替换上面的两条 2 FPS Controller 输入。下面复用当前 seed 的 `M`、`R` 和 GPU 变量：
+
+```bash
+CUDA_VISIBLE_DEVICES=$QWEN_GPUS python scripts/eval_bench_qwen36_native.py \
+  --manifest "$M" --out "$R/qwen_native_4fps" --checkpoint models/Qwen3.6-35B-A3B \
+  --seed "$SEED" --device cuda:0 --gpu-count 4 --max-memory-gib-per-gpu "$QWEN_MEMORY" \
+  --fps 4 --max-frames 4096 --context 262144 --visual-token-budget 24576 --memory-fraction .9
+
+CUDA_VISIBLE_DEVICES=$JEV_GPU python scripts/eval_bench_videojev.py \
+  --manifest "$M" --out "$R/videojev_4fps" --checkpoint models/VideoJev-4B \
+  --seed "$SEED" --device cuda:0 --fps 4 --max-frames 4096 \
+  --context 262144 --visual-token-budget 24576 --memory-fraction .9
+```
+
+原生 Qwen 的完整生成、解析和默认 temperature/top-p/top-k/presence penalty 沿用现有实现。这两条命令若放在三 seed 循环结束后，只会执行最后的 seed44；需要三个 seed 都测时，应放进循环内。
+
+## 结果与核验
+
+每个模型/Controller 目录保存 `run.json / predictions.jsonl / metrics.json / source/`。Jev 逐题为 `logits` 与 `answer_index`；Controller 保存实际 `fusion`、β、`videojev_scores`、融合前后概率、`fused_logits` 和来源 SHA。无 `fusion` 的历史 Controller 仅按旧 probability 公式解释。
+
+`summarize_bench.py` 已支持两种融合并按实际公式重算，β扫描跟随对应模式；MLVU 主指标是七任务 M-Avg，LVBench 同时报重叠类别。`analyze_controller_changes.py` 支持两种模式，逐选项同时列出 Jev 概率和实际参与融合的分数；`report_bench_screen.py` 显示模式并拒绝混合两种模式。
+
+```bash
+python scripts/analyze_controller_changes.py --manifest "$M" \
+  --qwen "$R/qwen_logits" --videojev "$R/videojev_logits" \
+  --controller "$R/controller_loglinear" --out "$R/changes_loglinear"
+```
+
+OR 诊断仍针对 Controller 的两条同协议输入。它是只在两个 top-1 间选边的 router 上限，不是可选第三个选项的完整分布融合的严格上限。三次重新抽题的方差包含题集差异；不同于官方固定题集、仅改变回答采样 seed 的方差。
+
+所有 GPU 输入协议、清单 SHA、两模型 seed、逐题选项/预处理、分数与来源指纹均校验。新旧公式分别评测和记录，不覆盖旧结果；完整 GPU 推理需在服务器验收。

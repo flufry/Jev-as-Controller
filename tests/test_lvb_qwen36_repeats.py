@@ -19,7 +19,7 @@ def refresh(root, rebuild_controller=False):
     if rebuild_controller:
         shutil.rmtree(args['controller'])
         evaluate(args['manifest'], args['qwen_controller'], args['videojev_controller'],
-                 args['controller'], qwen_method='qwen36')
+                 args['controller'], qwen_method='qwen36', fusion='probability')
     shutil.rmtree(args['out'])
     single_summary(**args)
 
@@ -40,7 +40,8 @@ def runs(experiment, tmp_path):
             args[role] = root/role
             make_source(args[role], manifest, Path(identity['checkpoint']['path']), identity['method'],
                         identity['protocol']['fps'], hits, seed=seed)
-        evaluate(manifest, args['qwen_controller'], args['videojev_controller'], args['controller'], qwen_method='qwen36')
+        evaluate(manifest, args['qwen_controller'], args['videojev_controller'], args['controller'],
+                 qwen_method='qwen36', fusion='probability')
         single_summary(**args)
         roots.append(root)
     return roots

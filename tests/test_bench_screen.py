@@ -213,7 +213,7 @@ def test_controller_fusion_summary_report_and_scope_restoration(tmp_path):
     from timejev import lvb_experiment as lvb
     manifest, rows = make_runs(tmp_path)
     original = (lvb.load_sample, lvb.score, lvb.Experiment)
-    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller')
+    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller', fusion='probability')
     assert (lvb.load_sample, lvb.score, lvb.Experiment) == original
     meta = json.loads((tmp_path / 'controller/run.json').read_text(encoding='utf-8'))
     assert meta['split'] == 'screening_subset'
@@ -266,7 +266,7 @@ def test_fusion_rejects_bad_sources(tmp_path, change):
 def test_summary_rejects_controller_tampering(tmp_path):
     from scripts.eval_bench_controller import evaluate
     manifest, _ = make_runs(tmp_path)
-    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller')
+    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller', fusion='probability')
     path = tmp_path / 'controller/run.json'
     data = json.loads(path.read_text(encoding='utf-8'))
     data['identity']['sources']['qwen']['predictions_sha256'] = 'changed'
@@ -301,10 +301,10 @@ def test_experiment_append_resume_and_adapter_fingerprint(tmp_path, monkeypatch)
 
 
 def test_beta_zero_diagnostic_matches_source():
-    raw = dict(id='q', options=['a', 'b', 'c'], candidate_logits=[1., 0., .9])
+    raw = dict(id='q', query='Which?', options=['a', 'b', 'c'], candidate_logits=[1., 0., .9], preprocessing={})
     weights = [math.exp(v) for v in raw['candidate_logits']]
     raw['probabilities'] = [v / sum(weights) for v in weights]
-    probabilities, choice = controlled(raw, dict(probabilities=[0., 1., 0.]), 0.)
+    probabilities, choice = controlled(raw, dict(raw, probabilities=[0., 1., 0.], candidate_logits=[-1000., 0., -1000.]), 0.)
     assert probabilities == pytest.approx(raw['probabilities']) and choice == 0
 
 
@@ -317,7 +317,7 @@ def test_sampling_rejects_incomplete_population(tmp_path):
 def test_mlvu_summary_uses_macro_metric_for_all_diagnostics(tmp_path):
     from scripts.eval_bench_controller import evaluate
     manifest, _ = make_runs(tmp_path, 'mlvu')
-    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller')
+    evaluate(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller', fusion='probability')
     result = summarize(manifest, tmp_path / 'qwen36', tmp_path / 'videojev', tmp_path / 'controller',
                        tmp_path / 'summary', bootstrap=100)
     assert result['primary_metric'] == 'm_avg'

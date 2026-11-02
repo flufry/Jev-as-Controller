@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from scripts.eval_longvideobench_controller import evaluate, softmax
+from scripts.eval_longvideobench_controller import FUSION_FORMULAS, evaluate, read_source, softmax
 from timejev.lvb_experiment import load_sample, read_predictions, score, sha256, write_json
 from timejev.user_data import write_jsonl
 
@@ -26,8 +26,8 @@ def experiment(tmp_path):
         directory = tmp_path/method
         directory.mkdir()
         predictions = []
-        for row in rows:
-            values = [1., -.5, 0.] if method == 'qwen35' else [-2., 3., 0.]
+        for index, row in enumerate(rows):
+            values = [1., -.5+index*.05, 0.] if method == 'qwen35' else [-2., 3.+index*.1, 0.]
             probabilities = softmax(values)
             prediction = dict(id=row['id'], query=row['query'], options=row['options'],
                 task='choice', answer_index=max(range(3), key=probabilities.__getitem__),
@@ -65,18 +65,25 @@ def test_formula_id_alignment_and_comparison(experiment, tmp_path):
     assert comparison['jev_as_controller']['n'] == 4
     for row in rows:
         raw, fs, result = qwen[row['id']], jev[row['id']], controlled[row['id']]
-        # 独立按 pi0*exp(beta*FS) 算，避免复刻实现。
-        weights = [p*math.exp(2*f) for p, f in zip(raw['probabilities'], fs['probabilities'])]
+        # 独立按 pQ*pJ**2 归一化，验证默认 log-linear 公式及固定 beta。
+        weights = [p*f**2 for p, f in zip(raw['probabilities'], fs['probabilities'])]
         expected = [value/sum(weights) for value in weights]
         assert result['probabilities'] == pytest.approx(expected)
         assert result['answer_index'] == 1
         assert result['qwen_probabilities'] == pytest.approx(raw['probabilities'])
         assert result['videojev_probabilities'] == fs['probabilities']
+        assert result['videojev_logits'] == pytest.approx([math.log(p) for p in fs['probabilities']])
+        assert result['videojev_logits_source'] == 'log_probabilities'
+        assert result['fusion'] == 'loglinear'
+        assert result['beta'] == 2.
     metadata = json.loads((tmp_path/'controller/run.json').read_text())
     assert metadata['identity']['manifest_sha256'] == sha256(manifest)
     assert metadata['identity']['sources']['qwen']['identity']['checkpoint']['files']
+    assert metadata['identity']['fusion'] == 'loglinear'
+    assert metadata['formula'] == FUSION_FORMULAS['loglinear']
     assert metadata['split'] == 'validation_subset'
-    assert json.loads((tmp_path/'controller/metrics.json').read_text())['n'] == 4
+    metrics = json.loads((tmp_path/'controller/metrics.json').read_text())
+    assert metrics['n'] == 4 and metrics['fusion'] == 'loglinear'
 
 
 def test_beta_zero_matches_qwen(experiment, tmp_path):
@@ -86,6 +93,73 @@ def test_beta_zero_matches_qwen(experiment, tmp_path):
     result = read_predictions(tmp_path/'controller/predictions.jsonl', rows)
     for identity in qwen:
         assert result[identity]['probabilities'] == pytest.approx(qwen[identity]['probabilities'])
+
+
+def test_probability_mode_keeps_original_formula_and_metadata(experiment, tmp_path):
+    invoke(experiment, tmp_path, fusion='probability')
+    _, rows, sources = experiment
+    qwen = read_predictions(sources['qwen35']/'predictions.jsonl', rows)
+    jev = read_predictions(sources['videojev']/'predictions.jsonl', rows)
+    result = read_predictions(tmp_path/'controller/predictions.jsonl', rows)
+    for row in rows:
+        weights = [p*math.exp(2*f) for p, f in zip(qwen[row['id']]['probabilities'], jev[row['id']]['probabilities'])]
+        assert result[row['id']]['probabilities'] == pytest.approx([w/sum(weights) for w in weights])
+        assert result[row['id']]['fusion'] == 'probability'
+    run = json.loads((tmp_path/'controller/run.json').read_text())
+    metrics = json.loads((tmp_path/'controller/metrics.json').read_text())
+    assert run['identity']['fusion'] == metrics['fusion'] == 'probability'
+    assert run['formula'] == FUSION_FORMULAS['probability']
+
+
+def test_saved_raw_logits_are_preserved_in_evaluation(experiment, tmp_path):
+    _, rows, sources = experiment
+    path = sources['videojev']/'predictions.jsonl'
+    predictions = list(read_predictions(path, rows).values())
+    for prediction in predictions:
+        prediction['logits'] = [math.log(p)+100. for p in prediction['probabilities']]
+    write_jsonl(predictions, path)
+    invoke(experiment, tmp_path)
+    result = read_predictions(tmp_path/'controller/predictions.jsonl', rows)
+    for prediction in predictions:
+        actual = result[prediction['id']]
+        assert actual['videojev_logits'] == prediction['logits']
+        assert actual['videojev_logits_source'] == 'saved_logits'
+
+
+@pytest.mark.parametrize('kind', ['unknown_fusion', 'wrong_formula', 'metric_fusion'])
+def test_controller_source_rejects_formula_or_fusion_mislabel(experiment, tmp_path, kind):
+    invoke(experiment, tmp_path)
+    manifest, rows, _ = experiment
+    directory = tmp_path/'controller'
+    path = directory/('metrics.json' if kind == 'metric_fusion' else 'run.json')
+    value = json.loads(path.read_text())
+    if kind == 'unknown_fusion':
+        value['identity']['fusion'] = 'unknown'
+    elif kind == 'wrong_formula':
+        value['formula'] = FUSION_FORMULAS['probability']
+    else:
+        value['fusion'] = 'probability'
+    write_json(path, value)
+    with pytest.raises(ValueError):
+        read_source(directory, rows, sha256(manifest), 'jev_as_controller')
+
+
+def test_historical_probability_source_without_fusion_is_readable(experiment, tmp_path):
+    invoke(experiment, tmp_path, fusion='probability')
+    manifest, rows, _ = experiment
+    directory = tmp_path/'controller'
+    for name in ('run.json', 'metrics.json'):
+        path = directory/name
+        value = json.loads(path.read_text())
+        (value['identity'] if name == 'run.json' else value).pop('fusion')
+        write_json(path, value)
+    predictions = [json.loads(line) for line in (directory/'predictions.jsonl').read_text().splitlines()]
+    for prediction in predictions:
+        prediction.pop('fusion')
+    write_jsonl(predictions, directory/'predictions.jsonl')
+    actual, source, metrics = read_source(directory, rows, sha256(manifest), 'jev_as_controller')
+    assert len(actual) == metrics['n'] == 4
+    assert 'fusion' not in source['identity']
 
 
 def test_qwen36_is_explicit_and_preserves_source_identity(experiment, tmp_path):

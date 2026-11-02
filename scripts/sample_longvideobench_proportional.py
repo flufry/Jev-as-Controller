@@ -113,7 +113,7 @@ def sample(manifest, reference, out, n=100, seed=42):
         raise FileExistsError('样本或元数据已存在，请选择新的输出路径')
     text, metadata = payload(manifest, reference, out, n, seed)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open('x', encoding='utf-8') as stream:
+    with out.open('x', encoding='utf-8', newline='\n') as stream:
         stream.write(text)
     with meta_path.open('x', encoding='utf-8') as stream:
         json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
