@@ -90,6 +90,26 @@ def load_rows(path, *, verify_meta=True):
     return rows
 
 
+def sample_seed(path):
+    """Return the fixed question-sampling seed, separate from inference seeds."""
+    path = Path(path)
+    meta_path = path.with_suffix('.meta.json')
+    if not meta_path.is_file():
+        return None
+    meta = json.loads(meta_path.read_text(encoding='utf-8'))
+    if meta.get('schema') != 'bench_subset_v1':
+        return None
+    seed = meta.get('seed')
+    if type(seed) is not int or meta.get('sample_sha256') != sha256(path):
+        raise ValueError('Sample seed or manifest SHA is invalid')
+    return seed
+
+
+def source_sample_seed(identity):
+    """Read both new and historical model-run sampling metadata."""
+    return identity.get('sample_seed', (identity.get('settings') or {}).get('sample_seed', identity.get('seed')))
+
+
 def portable_rows(rows, output):
     parent = Path(output).resolve().parent
     for row in rows:

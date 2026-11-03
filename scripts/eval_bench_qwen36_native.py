@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 import torch
 
-from scripts.bench_io import BENCHES, load_rows, stratum
+from scripts.bench_io import BENCHES, load_rows, sample_seed, stratum
 from scripts.eval_longvideobench_qwen import ANSWER_INSTRUCTION, text_inputs
 from scripts.eval_longvideobench_qwen36 import (
     device_plan, load_backend, load_model, memory_budget, synchronize,
@@ -46,13 +46,7 @@ def main(argv=None):
     budget_gib = [budgets[gpu] / 2**30 for gpu in range(args.gpu_count)]
 
     rows = load_rows(args.manifest)
-    meta_path = Path(args.manifest).with_suffix('.meta.json')
-    sample_seed = None
-    if meta_path.is_file():
-        meta = json.loads(meta_path.read_text(encoding='utf-8'))
-        sample_seed = meta.get('seed')
-        if meta.get('schema') == 'bench_subset_v1' and meta.get('seed') != args.seed:
-            raise ValueError('Inference seed must match sample metadata seed')
+    fixed_seed = sample_seed(args.manifest)
     benchmark = rows[0].get('benchmark')
     if benchmark not in BENCHES:
         raise ValueError(f'需要跨benchmark清单，支持的数据集：{BENCHES}')
@@ -94,7 +88,7 @@ def main(argv=None):
         ROOT/'scripts/eval_bench_qwen36.py', ROOT/'timejev/mlvu_benchmark.py',
         ROOT/'timejev/lvb_experiment.py', ROOT/'timejev/rgb_media.py', ROOT/'timejev/video.py']
     run = NativeExperiment(args, settings, tokenizer=processor.tokenizer, rows=rows,
-        code_paths=code_paths, method='qwen36_native_instruct', sample_seed=sample_seed,
+        code_paths=code_paths, method='qwen36_native_instruct', sample_seed=fixed_seed,
         input_protocol=input_protocol, benchmark=benchmark)
     if len(run.done) == len(run.rows):
         return run.finish()

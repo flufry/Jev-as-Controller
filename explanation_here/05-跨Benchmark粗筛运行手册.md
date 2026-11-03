@@ -134,7 +134,7 @@ python scripts/check_bench_inputs.py --manifest runs/screen/lvbench/sample_42.js
   --out runs/screen/lvbench/input_audit.json --budget
 ```
 
-`--manifest` 可覆盖默认完整清单位置。每份 `sample.meta.json` 包含 seed、源清单 SHA、人口、配额、余数并列顺序、选中 ID 列表、样本 SHA。问题按源题序输出，不改选项/标签，同视频可选部分题。所有输出拒绝覆盖；复现检查应输出到同一层级的另一个目录，再比较文件 SHA。相对路径编码保证整个仓库移动到服务器后仍可读取，但不同深度输出目录的相对路径不同，文件 SHA 可能不同，这是预期行为。
+`--manifest` 可覆盖默认完整清单位置。每份 `sample.meta.json` 包含抽题 seed、源清单 SHA、人口、配额、余数并列顺序、选中 ID 列表、样本 SHA。问题按源题序输出，不改选项/标签，同视频可选部分题。可为 seed42/43/44 分别抽题并按原实验方式运行；也可固定题集、只改变推理 seed。抽题 seed 与推理 seed 不要求一致，但同一次 Controller 的两路模型必须对应同一份题集和同一推理 seed。完整命令见第 13 篇。所有输出拒绝覆盖；复现检查应输出到同一层级的另一个目录，再比较文件 SHA。相对路径编码保证整个仓库移动到服务器后仍可读取，但不同深度输出目录的相对路径不同，文件 SHA 可能不同，这是预期行为。
 
 `check_bench_inputs.py --budget` 对样本全部视频执行真实 `prepare_record()`，保存 frames/grid/tokens/时间范围。省略 `--budget` 只做清单、路径、SHA 校验，无需导入模型框架。预算预检不验证 GPU 推理、长问题文本预算或模型加载。
 
@@ -159,7 +159,7 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 # 依次将 BENCH 改为 videomme / mlvu / lvbench；首次可先使用 pilot 的路径。
 BENCH=mlvu
-M=runs/screen/$BENCH/sample_43.jsonl
+M=runs/screen/$BENCH/sample_42.jsonl
 
 CUDA_VISIBLE_DEVICES=1 python scripts/eval_bench_videojev.py \
   --manifest "$M" --out "runs/screen/$BENCH/videojev_logits" --checkpoint models/VideoJev-4B \
@@ -197,20 +197,20 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,6 python scripts/eval_bench_qwen36_logits.py \
 
 ```bash
 BENCH=mlvu
-M=runs/screen/$BENCH/sample_42.jsonl
+M=runs/screen/$BENCH/sample_43.jsonl
 
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
-  --out "runs/screen/$BENCH/controller_loglinear" --fusion loglinear --beta 2
+  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
+  --out "runs/screen/$BENCH/controller_loglinear_42" --fusion loglinear --beta 2
 
 # 单独评测旧方法：同一份 Jev logits 先 softmax，再按旧公式融合。
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
-  --out "runs/screen/$BENCH/controller_probability" --fusion probability --beta 2
+  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
+  --out "runs/screen/$BENCH/controller_probability_42" --fusion probability --beta 2
 
 python scripts/summarize_bench.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits" --videojev "runs/screen/$BENCH/videojev_logits" \
-  --controller "runs/screen/$BENCH/controller_loglinear" --out "runs/screen/$BENCH/summary_loglinear" \
+  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
+  --controller "runs/screen/$BENCH/controller_loglinear_42" --out "runs/screen/$BENCH/summary_loglinear_42" \
   --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 42
 
 # 三个 bench 分别完成上面流程后：
@@ -220,7 +220,7 @@ python scripts/report_bench_screen.py --summaries \
   runs/screen/lvbench/summary_loglinear/results.json --out runs/screen/report_loglinear
 ```
 
-汇总不仅读取 metrics，还重验完整预测、run/预测/metrics 的来源 SHA、清单 SHA、两模型 seed 和固定协议、逐题预处理，以及 β=2 的融合公式。任何一份来源被改过都拒绝。随机选边模拟 50 次，同时给出其精确期望 `(Qwen指标 + VideoJev指标)/2`；该 50 次波动不是样本总体准确率的置信区间。
+汇总不仅读取 metrics，还重验完整预测、run/预测/metrics 的来源 SHA、清单 SHA、两模型推理 seed 一致、抽题 seed 对应同一清单、固定协议、逐题预处理，以及 β=2 的融合公式。抽题 seed 与推理 seed 可以不同。任何一份来源被改过都拒绝。随机选边模拟 50 次，同时给出其精确期望 `(Qwen指标 + VideoJev指标)/2`；该 50 次波动不是样本总体准确率的置信区间。
 
 输出 `results.md / results.json` 包含三方法、随机选边、OR 参照、异答率、分层、β 扫描、bootstrap CI、配对纠正/损害、精确双侧 McNemar。MLVU 的统计、随机选边与 β 扫描均用 M-Avg。总表不会对三个不同分布/指标简单平均。
 

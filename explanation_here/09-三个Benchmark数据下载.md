@@ -53,10 +53,6 @@ BENCH_PY=/workspace/Jev-as-Controller/data/.venv-bench-data/bin/python
 
 MLVU 仍需先在其官方 HF 页面取得访问权限，再在这个下载环境登录；交互输入读取 token，不把 token 写入命令：
 
-```bash
-/workspace/Jev-as-Controller/data/.venv-bench-data/bin/hf auth login
-```
-
 为 LVBench 安装 Deno。以下适用于本项目的 Linux x86_64 服务器，利用容器 Python 解压，不依赖宿主机 Python 或额外的 unzip 包：
 
 ```bash

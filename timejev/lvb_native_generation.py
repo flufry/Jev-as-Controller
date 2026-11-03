@@ -219,17 +219,24 @@ def score_generated(rows, by_id, *, benchmark=None):
 
 class NativeExperiment:
     def __init__(self, args, settings, tokenizer=None, *, rows=None, code_paths=None,
-                 method='qwen36_native_instruct', sample_seed=None, input_protocol=None, benchmark=None):
+                 method='qwen36_native_instruct', sample_seed=None, input_protocol=None, benchmark=None,
+                 full_dataset=None):
         self.tokenizer = tokenizer
         self.benchmark = benchmark
+        self.full_dataset = full_dataset
         if rows is None and sample_seed is None:
             sample_seed = getattr(args, 'sample_seed', 42)
         rows = load_sample(args.manifest) if rows is None else rows
-        if benchmark is not None and (benchmark not in ('videomme', 'mlvu', 'lvbench')
+        allowed = ('videomme', 'mlvu', 'lvbench', 'longvideobench') if full_dataset is not None else ('videomme', 'mlvu', 'lvbench')
+        if full_dataset is not None and (full_dataset.get('benchmark') != benchmark
+                or full_dataset.get('selection_seed', 'missing') is not None
+                or full_dataset.get('n') != len(rows) or getattr(args, 'limit', None) is not None):
+            raise ValueError('全量运行必须使用完整固定题集，不允许 limit 或抽题 seed')
+        if benchmark is not None and (benchmark not in allowed
                 or not rows or any(row.get('benchmark') != benchmark for row in rows)):
             raise ValueError('benchmark必须与全部题目的数据集一致')
         if benchmark is not None and (input_protocol is None
-                or input_protocol.get('name') != 'video_bench_screen_rgb_v1'):
+                or input_protocol.get('name') != ('video_bench_full_rgb_v1' if full_dataset is not None else 'video_bench_screen_rgb_v1')):
             raise ValueError('跨bench原生生成必须显式指定粗筛输入协议')
         self.rows = rows[:args.limit] if getattr(args, 'limit', None) else rows
         self.out = Path(args.out).resolve()
@@ -261,6 +268,8 @@ class NativeExperiment:
             limit=getattr(args, 'limit', None), selected_ids=[row['id'] for row in self.rows],
             media=media, packages=packages,
             code_sha256={str(path.relative_to(ROOT)): sha256(path) for path in code})
+        if full_dataset is not None:
+            identity.update(full_dataset=full_dataset, selection_seed=None)
         if sample_seed is not None:
             identity['sample_seed'] = sample_seed
         if benchmark is not None:
@@ -282,6 +291,9 @@ class NativeExperiment:
             if benchmark is not None:
                 self.metadata.update(benchmark=benchmark, split='screening_subset',
                     sampling='manifest_defined', training_overlap_verified=False)
+            if full_dataset is not None:
+                self.metadata.update(schema='video_bench_full_native_run_v1', split=full_dataset['split'],
+                    sampling='full_dataset_no_selection', selection_seed=None)
             write_json(meta_path, self.metadata)
             for path in code:
                 destination = self.out/'source'/path.relative_to(ROOT)
@@ -319,8 +331,12 @@ class NativeExperiment:
         print(json.dumps(dict(done=len(self.done), total=len(self.rows), id=row['id'], valid=parsed['valid'])), flush=True)
 
     def finish(self):
-        metrics = score_generated(self.rows, read_generated(self.predictions_path, self.rows,
-            tokenizer=self.tokenizer), benchmark=self.benchmark)
+        predictions = read_generated(self.predictions_path, self.rows, tokenizer=self.tokenizer)
+        if self.full_dataset is not None:
+            from .bench_full import score_answers
+            metrics = score_answers(self.rows, predictions, self.benchmark)
+        else:
+            metrics = score_generated(self.rows, predictions, benchmark=self.benchmark)
         metrics.update(method=self.metadata['identity']['method'], protocol=self.metadata['identity']['protocol'],
             inference_seed=self.metadata['identity']['inference_seed'],
             finished_at=datetime.now(timezone.utc).isoformat())

@@ -6,7 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from scripts.bench_io import load_rows, sha256, stratum
+from scripts.bench_io import load_rows, sample_seed, sha256, stratum
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -120,13 +120,12 @@ def install(legacy=None):
 
     class Experiment(saved['Experiment']):
         def __init__(self, args, method, settings):
-            meta_path = Path(args.manifest).with_suffix('.meta.json')
-            if meta_path.exists():
-                meta = json.loads(meta_path.read_text(encoding='utf-8'))
-                if meta.get('schema') == 'bench_subset_v1' and meta['seed'] != args.seed:
-                    raise ValueError('Inference seed must match sample metadata seed')
+            fixed_seed = sample_seed(args.manifest)
             # Included before the legacy resume equality check, not added afterwards.
-            super().__init__(args, method, dict(settings, bench_adapter_sha256=hashes))
+            scoped_settings = dict(settings, bench_adapter_sha256=hashes)
+            if fixed_seed is not None:
+                scoped_settings['sample_seed'] = fixed_seed
+            super().__init__(args, method, scoped_settings)
             for name in hashes:
                 target = self.out / 'source' / name
                 target.parent.mkdir(parents=True, exist_ok=True)

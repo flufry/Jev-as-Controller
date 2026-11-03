@@ -36,7 +36,7 @@ python scripts/build_bench_manifest.py --bench lvbench --base data/benchmarks/lv
   --annotation data/benchmarks/lvbench/video_info.meta.jsonl
 ```
 
-下面先测 MLVU；把 `BENCH=mlvu` 改成 `BENCH=lvbench` 即可测另一数据集。GPU 与每卡预算按实际空闲资源修改。首次使用全新 `RUN_ROOT`；三 seed 各有独立目录，结果不会覆盖。
+下面先测 MLVU；把 BENCH 改为 lvbench 即可测另一数据集。每个实验 seed 分别抽取对应题集并运行；如果要复用同一题集做多次随机推理，也可以只抽一次，然后改变评测命令的 `--seed`。抽题 seed 与推理 seed 不要求相同。GPU 与每卡预算按实际空闲资源修改。首次使用全新 RUN_ROOT；每次运行使用独立目录，结果不会覆盖。
 
 ```bash
 set -euo pipefail
@@ -44,24 +44,23 @@ source scripts/env_qwen36.sh
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 BENCH=mlvu
-RUN_ROOT=runs/screen/$BENCH/aligned_v2
+RUN_ROOT=runs/screen/$BENCH/aligned_seed_runs_v3
 QWEN_GPUS=0,1,3,4
 QWEN_MEMORY=40,20,40,40
 JEV_GPU=7
-
 for SEED in 42 43 44; do
-  R=$RUN_ROOT/seed$SEED
-  M=$R/sample.jsonl
+  SAMPLE_SEED=$SEED
+  M=$RUN_ROOT/sample$SAMPLE_SEED.jsonl
+  R=$RUN_ROOT/sample$SAMPLE_SEED/inference$SEED
 
   if [ "$BENCH" = mlvu ]; then
-    python scripts/sample_bench_subset.py --bench mlvu --seed "$SEED" \
+    python scripts/sample_bench_subset.py --bench mlvu --seed "$SAMPLE_SEED" \
       --per-task 20 --out "$M"
   else
-    python scripts/sample_bench_subset.py --bench lvbench --seed "$SEED" \
+    python scripts/sample_bench_subset.py --bench lvbench --seed "$SAMPLE_SEED" \
       --n 150 --proportional --out "$M"
   fi
-
-  python scripts/check_bench_inputs.py --manifest "$M" --budget --out "$R/input_audit.json"
+  python scripts/check_bench_inputs.py --manifest "$M" --budget --out "$RUN_ROOT/sample$SAMPLE_SEED/input_audit.json"
 
   CUDA_VISIBLE_DEVICES=$JEV_GPU python scripts/eval_bench_videojev.py \
     --manifest "$M" --out "$R/videojev_logits" --checkpoint models/VideoJev-4B \
@@ -89,27 +88,31 @@ for SEED in 42 43 44; do
 done
 ```
 
-已有同一题集时，跳过抽题/预检，令 `M` 指向已有清单；不要为了升级融合重新抽题。已有 Qwen logits 可复用。新 Jev 输出统一保存 raw logits；不要将 native Qwen 文本生成目录传给融合。
+需要不同抽题题集时，为每个抽题 seed 生成一份 manifest，并分别运行 Qwen、VideoJev 和 Controller；同一个 Controller 的两路模型必须使用同一题集和推理 seed。也可固定抽题 seed，单独更改模型命令的 `--seed` 以比较推理随机性。代码不要求抽题 seed 与推理 seed 相同。已有 Qwen logits 可复用。新 Jev 输出统一保存 raw logits；不要将 native Qwen 文本生成目录传给融合。
 
 中断恢复时，不要从头重跑上面的整个循环：用当前 seed 的同一条模型评测命令增加 `--resume`；抽样、预算预检、CPU 融合及汇总都拒绝覆盖已有文件。此次源码与输出格式均已变化，旧模型目录不能强制 `--resume`，应另选新目录。
 
 ## 独立 4 FPS 基线
 
-如果要延续既有报告的独立基线，另跑 Qwen native 和 VideoJev 4 FPS，不替换上面的两条 2 FPS Controller 输入。下面复用当前 seed 的 `M`、`R` 和 GPU 变量：
+如果要延续既有报告的独立基线，另跑 Qwen native 和 VideoJev 4 FPS，不替换上面的两条 2 FPS Controller 输入。此示例固定使用抽题 seed42 的清单，若文件尚不存在，先用抽样命令生成；GPU 变量沿用上文：
 
 ```bash
-CUDA_VISIBLE_DEVICES=$QWEN_GPUS python scripts/eval_bench_qwen36_native.py \
-  --manifest "$M" --out "$R/qwen_native_4fps" --checkpoint models/Qwen3.6-35B-A3B \
-  --seed "$SEED" --device cuda:0 --gpu-count 4 --max-memory-gib-per-gpu "$QWEN_MEMORY" \
-  --fps 4 --max-frames 4096 --context 262144 --visual-token-budget 24576 --memory-fraction .9
+M=$RUN_ROOT/sample42.jsonl
+for SEED in 42 43 44; do
+  R=$RUN_ROOT/seed$SEED
+  CUDA_VISIBLE_DEVICES=$QWEN_GPUS python scripts/eval_bench_qwen36_native.py \
+    --manifest "$M" --out "$R/qwen_native_4fps" --checkpoint models/Qwen3.6-35B-A3B \
+    --seed "$SEED" --device cuda:0 --gpu-count 4 --max-memory-gib-per-gpu "$QWEN_MEMORY" \
+    --fps 4 --max-frames 4096 --context 262144 --visual-token-budget 24576 --memory-fraction .9
 
-CUDA_VISIBLE_DEVICES=$JEV_GPU python scripts/eval_bench_videojev.py \
-  --manifest "$M" --out "$R/videojev_4fps" --checkpoint models/VideoJev-4B \
-  --seed "$SEED" --device cuda:0 --fps 4 --max-frames 4096 \
-  --context 262144 --visual-token-budget 24576 --memory-fraction .9
+  CUDA_VISIBLE_DEVICES=$JEV_GPU python scripts/eval_bench_videojev.py \
+    --manifest "$M" --out "$R/videojev_4fps" --checkpoint models/VideoJev-4B \
+    --seed "$SEED" --device cuda:0 --fps 4 --max-frames 4096 \
+    --context 262144 --visual-token-budget 24576 --memory-fraction .9
+done
 ```
 
-原生 Qwen 的完整生成、解析和默认 temperature/top-p/top-k/presence penalty 沿用现有实现。这两条命令若放在三 seed 循环结束后，只会执行最后的 seed44；需要三个 seed 都测时，应放进循环内。
+原生 Qwen 的完整生成、解析和默认 temperature/top-p/top-k/presence penalty 沿用现有实现。三个独立基线运行仍读取同一份 M，而不是重新抽题。
 
 ## 结果与核验
 
@@ -123,6 +126,6 @@ python scripts/analyze_controller_changes.py --manifest "$M" \
   --controller "$R/controller_loglinear" --out "$R/changes_loglinear"
 ```
 
-OR 诊断仍针对 Controller 的两条同协议输入。它是只在两个 top-1 间选边的 router 上限，不是可选第三个选项的完整分布融合的严格上限。三次重新抽题的方差包含题集差异；不同于官方固定题集、仅改变回答采样 seed 的方差。
+OR 诊断仍针对 Controller 的两条同协议输入。它是只在两个 top-1 间选边的 router 上限，不是可选第三个选项的完整分布融合的严格上限。这组三次实验固定题集，差异来自推理 seed；Qwen logits 和 Jev argmax 是确定性取分，三次可能相同，不能把这种重复解释为三份独立抽题证据。Qwen native 使用逐题生成 seed，才会产生真正的回答采样波动。
 
 所有 GPU 输入协议、清单 SHA、两模型 seed、逐题选项/预处理、分数与来源指纹均校验。新旧公式分别评测和记录，不覆盖旧结果；完整 GPU 推理需在服务器验收。

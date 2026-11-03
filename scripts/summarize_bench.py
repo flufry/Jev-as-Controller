@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.bench_io import json_bytes, load_rows, sha256, stratum, write_new
+from scripts.bench_io import json_bytes, load_rows, sample_seed, sha256, source_sample_seed, stratum, write_new
 from scripts.bench_compat import generic_score, read_predictions
 
 LIMITATIONS = ('粗筛子集，非官方全量口径；两模型未做算力对齐；训练重叠未核实。'
@@ -74,12 +74,11 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
         raise ValueError('Screening requires the same fixed 2FPS/2048/262144/24576 video-only protocol')
     if qs['identity'].get('seed') is None or qs['identity'].get('seed') != js['identity'].get('seed'):
         raise ValueError('Source run seeds differ or are missing')
-    sample_meta_path = Path(manifest).with_suffix('.meta.json')
-    if sample_meta_path.exists():
-        sample_meta_value = json.loads(sample_meta_path.read_text(encoding='utf-8'))
-        if (sample_meta_value.get('schema') == 'bench_subset_v1'
-                and sample_meta_value['seed'] != qs['identity']['seed']):
-            raise ValueError('Source inference seed differs from sample seed')
+    fixed_seed = sample_seed(manifest)
+    if cs['identity'].get('seed') != qs['identity']['seed']:
+        raise ValueError('Controller inference seed differs from its source runs')
+    if fixed_seed is not None and any(source_sample_seed(source['identity']) != fixed_seed for source in (qs, js, cs)):
+        raise ValueError('Run question-sampling seed differs from manifest')
     if cs['identity'].get('beta') != 2 or cm.get('beta', 2) != 2:
         raise ValueError('Primary controller must use beta=2')
     for name, source in (('qwen', qs), ('videojev', js)):
@@ -165,7 +164,8 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
             delta_vs_qwen=float((hits['controller'][idx] - hits['qwen36'][idx]).mean()))
     sample_meta = Path(manifest).with_suffix('.meta.json')
     result = dict(schema='bench_screen_summary_v1', benchmark=rows[0].get('benchmark'), n=len(rows),
-        seed=qs['identity']['seed'], manifest_sha256=digest,
+        seed=qs['identity']['seed'], inference_seed=qs['identity']['seed'], sample_seed=fixed_seed,
+        manifest_sha256=digest,
         sample_meta=json.loads(sample_meta.read_text(encoding='utf-8')) if sample_meta.exists() else None,
         primary_metric=qm['primary_metric'], protocol=protocol, beta=2., fusion=fusion, methods=methods,
         delta_vs_qwen=delta, delta_ci95=ci(draws['controller'] - draws['qwen36']), or_minus_qwen=room,
@@ -179,7 +179,7 @@ def summarize(manifest, qwen, videojev, controller, out, beta_sweep='1,2,3', boo
         bootstrap=dict(repeats=bootstrap, seed=seed, unit='question', paired=True, stratified=True),
         decision=decision, limitations=LIMITATIONS, training_overlap_verified=False,
         sources=dict(qwen=qs, videojev=js, controller=cs), summarizer_sha256=sha256(__file__))
-    lines = [f'# {result["benchmark"]} 粗筛（n={len(rows)}, seed={result["seed"]}）', '',
+    lines = [f'# {result["benchmark"]} 粗筛（n={len(rows)}, 抽题 seed={fixed_seed}，推理 seed={result["seed"]}）', '',
              f'主指标：{result["primary_metric"]}；融合：{fusion}，β=2；2 FPS / 2048 帧 / context 262144 / 视觉 token 24576；无字幕、无音频。', '',
              '| 方法 | 主指标 % | 答对/总数 | 95% bootstrap CI % |', '|---|---:|---:|---|']
     for name, row in methods.items():

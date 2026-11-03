@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.analyze_controller_changes import read_manifest
 from scripts.bench_compat import generic_score
-from scripts.bench_io import json_bytes, jsonl_bytes, sha256, stratum, write_new
+from scripts.bench_io import json_bytes, jsonl_bytes, sample_seed, sha256, source_sample_seed, stratum, write_new
 from scripts.eval_longvideobench_controller import control as upstream_control, FUSION_FORMULAS
 from scripts.summarize_bench import read_run
 from scripts.videojev_candidate_logits import candidate_probabilities, softmax, validate_logits
@@ -52,11 +52,9 @@ def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', fusio
         raise ValueError('Both inputs require the same video-only protocol')
     if type(seed) is not int or seed != js['identity'].get('seed'):
         raise ValueError('Both source runs must have the same explicit seed')
-    meta_path = Path(manifest).with_suffix('.meta.json')
-    if meta_path.is_file():
-        meta = json.loads(meta_path.read_text(encoding='utf-8'))
-        if meta.get('schema') == 'bench_subset_v1' and meta.get('seed') != seed:
-            raise ValueError('sample seed 与来源 seed 不一致')
+    fixed_seed = sample_seed(manifest)
+    if fixed_seed is not None and any(source_sample_seed(source['identity']) != fixed_seed for source in (qs, js)):
+        raise ValueError('Model runs must use the manifest question-sampling seed')
     predictions = {}
     for row in rows:
         q, j = qp[row['id']], jp[row['id']]
@@ -78,7 +76,8 @@ def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', fusio
                   'scripts/bench_io.py', 'scripts/bench_compat.py', 'scripts/summarize_bench.py']
     root = Path(__file__).resolve().parents[1]
     metadata = dict(schema='video_bench_screen_run_v1', benchmark=rows[0]['benchmark'], split='screening_subset',
-        identity=dict(method='jev_as_controller', manifest_sha256=digest, seed=seed, protocol=protocol,
+        identity=dict(method='jev_as_controller', manifest_sha256=digest, seed=seed, sample_seed=fixed_seed,
+            protocol=protocol,
             beta=beta, fusion=fusion, score_source=score_source, sources=dict(qwen=qs, videojev=js),
             code_sha256={name: sha256(root/name) for name in code_names}),
         formula=FUSION_FORMULAS[fusion], manifest=str(Path(manifest).resolve()), command=sys.argv,

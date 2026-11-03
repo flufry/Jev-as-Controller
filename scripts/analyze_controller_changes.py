@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.bench_io import json_bytes, jsonl_bytes, sha256, stratum, write_new
+from scripts.bench_io import json_bytes, jsonl_bytes, sample_seed, sha256, source_sample_seed, stratum, write_new
 from scripts.summarize_bench import fusion_mode, read_run
 from scripts.videojev_candidate_logits import candidate_probabilities
 
@@ -80,11 +80,11 @@ def analyze(manifest, qwen, videojev, controller):
     seed = qs['identity'].get('seed')
     if type(seed) is not int or seed != js['identity'].get('seed'):
         raise ValueError('两个专家的推理 seed 不一致或缺失')
-    meta_path = Path(manifest).with_suffix('.meta.json')
-    if meta_path.is_file():
-        meta = json.loads(meta_path.read_text(encoding='utf-8'))
-        if meta.get('schema') == 'bench_subset_v1' and meta.get('seed') != seed:
-            raise ValueError('sample seed 与输入运行的 seed 不一致')
+    fixed_seed = sample_seed(manifest)
+    if identity.get('seed') != seed:
+        raise ValueError('Controller 推理 seed 与输入运行不一致')
+    if fixed_seed is not None and any(source_sample_seed(source['identity']) != fixed_seed for source in (qs, js, cs)):
+        raise ValueError('运行的抽题 seed 与样本元数据不一致')
     for name, source in (('qwen', qs), ('videojev', js)):
         if not source_matches(identity.get('sources', {}).get(name, {}), source):
             raise ValueError(f'Controller 来源指纹不匹配：{name}')

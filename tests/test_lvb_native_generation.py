@@ -385,8 +385,9 @@ def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_r
         return self if a and str(a[0]).startswith('cuda') else original_to(self, *a, **kw)
 
     monkeypatch.setattr(torch.Tensor, 'to', cpu_test_to)
+    inference_seed = '43' if cross_bench else '42'
     metrics = evaluator.main(['--manifest', args.manifest, '--out', args.out,
-        '--checkpoint', args.checkpoint, '--seed', '42'])
+        '--checkpoint', args.checkpoint, '--seed', inference_seed])
     assert len(calls) == 3
     assert metrics['accuracy'] == pytest.approx(1/3)
     saved = [json.loads(line) for line in (Path(args.out)/'predictions.jsonl').read_text().splitlines()]
@@ -401,6 +402,7 @@ def test_evaluator_saves_generated_response_instead_of_candidate_logits(native_r
         assert metadata['identity']['benchmark'] == metadata['benchmark'] == metrics['benchmark'] == 'videomme'
         assert metadata['split'] == metrics['split'] == 'screening_subset'
         assert metadata['identity']['sample_seed'] == 42
+        assert metadata['identity']['inference_seed'] == 43
         assert metadata['identity']['protocol'] == metrics['protocol']
         assert metrics['protocol']['name'] == 'video_bench_screen_rgb_v1'
         assert set(metrics['by_stratum']) == {'short', 'medium', 'long'}

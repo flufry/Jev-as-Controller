@@ -281,15 +281,21 @@ def test_experiment_append_resume_and_adapter_fingerprint(tmp_path, monkeypatch)
     rows = fixture_rows(tmp_path)
     manifest = tmp_path / 'sample.jsonl'
     manifest.write_bytes(jsonl_bytes(rows))
+    from collections import Counter
+    save_json(manifest.with_suffix('.meta.json'), dict(schema='bench_subset_v1', seed=42,
+        sample_sha256=sha256(manifest), selected_ids=[row['id'] for row in rows],
+        n=len(rows), quotas=dict(Counter(row['stratum'] for row in rows))))
     model = tmp_path / 'model'
     model.mkdir()
     save_json(model / 'config.json', {})
     args = SimpleNamespace(manifest=str(manifest), out=str(tmp_path / 'run'), checkpoint=str(model),
         context=262144, visual_token_budget=24576, fps=2., max_frames=2048, memory_fraction=.9,
-        seed=42, device='cpu', resume=False)
+        seed=43, device='cpu', resume=False)
     monkeypatch.setattr('sys.argv', [str(Path(bench_compat.__file__).with_name('eval_bench_videojev.py'))])
     with bench_compat.install():
         run = lvb.Experiment(args, 'videojev', {})
+        assert run.metadata['identity']['seed'] == 43
+        assert run.metadata['identity']['settings']['sample_seed'] == 42
         run.append(run.rows[0], [1., 0., 0.])
     args.resume = True
     with bench_compat.install():
@@ -298,6 +304,47 @@ def test_experiment_append_resume_and_adapter_fingerprint(tmp_path, monkeypatch)
     monkeypatch.setattr(bench_compat, 'adapter_hashes', lambda legacy: {'changed.py': 'new-code'})
     with bench_compat.install(), pytest.raises(ValueError, match='指纹'):
         lvb.Experiment(args, 'videojev', {})
+
+
+def test_fixed_question_sample_supports_three_inference_seeds(tmp_path):
+    from collections import Counter
+    from shutil import copytree
+    from scripts.analyze_controller_changes import analyze
+    from scripts.eval_bench_controller import evaluate
+
+    manifest, rows = make_runs(tmp_path, 'mlvu')
+    save_json(manifest.with_suffix('.meta.json'), dict(schema='bench_subset_v1', seed=42,
+        sample_sha256=sha256(manifest), selected_ids=[row['id'] for row in rows],
+        n=len(rows), quotas=dict(Counter(row['stratum'] for row in rows))))
+    summaries = []
+    for seed in (42, 43, 44):
+        cell = tmp_path / f'inference{seed}'
+        for method in ('qwen36', 'videojev'):
+            directory = cell / method
+            copytree(tmp_path / method, directory)
+            run_path = directory / 'run.json'
+            metadata = json.loads(run_path.read_text(encoding='utf-8'))
+            metadata['identity']['seed'] = seed
+            metadata['identity']['settings'] = {'sample_seed': 42}
+            save_json(run_path, metadata)
+        controller = cell / 'controller'
+        evaluate(manifest, cell/'qwen36', cell/'videojev', controller)
+        identity = json.loads((controller/'run.json').read_text(encoding='utf-8'))['identity']
+        assert identity['seed'] == seed and identity['sample_seed'] == 42
+        result = summarize(manifest, cell/'qwen36', cell/'videojev', controller,
+                           cell/'summary', bootstrap=20, random_repeats=2, seed=seed)
+        assert result['sample_seed'] == 42 and result['inference_seed'] == seed
+        assert len(analyze(manifest, cell/'qwen36', cell/'videojev', controller)[0]) == len(rows)
+        summaries.append(cell/'summary/results.json')
+    report(summaries, tmp_path/'report')
+    table = json.loads((tmp_path/'report/results.json').read_text(encoding='utf-8'))['benchmarks']
+    assert [(row['sample_seed'], row['inference_seed']) for row in table] == [(42, 42), (42, 43), (42, 44)]
+    bad = tmp_path/'inference43/qwen36/run.json'
+    metadata = json.loads(bad.read_text(encoding='utf-8'))
+    metadata['identity']['settings']['sample_seed'] = 44
+    save_json(bad, metadata)
+    with pytest.raises(ValueError, match='question-sampling seed'):
+        evaluate(manifest, tmp_path/'inference43/qwen36', tmp_path/'inference43/videojev', tmp_path/'bad_controller')
 
 
 def test_beta_zero_diagnostic_matches_source():
