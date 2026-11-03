@@ -16,7 +16,7 @@
 | 报告方法 | 视频输入 | 三seed的含义 |
 |---|---|---|
 | Qwen3.6 自回归 | 4 FPS / 4096帧 | 实际执行三遍完整采样生成，逐题保存输出token和解析 |
-| 单步 Qwen logits（融合来源） | 2 FPS / 2048帧 | 确定性首步原始候选分数只计算一次；主表重复列示其argmax，方差为0，不冒充三次采样 |
+| 单步 Qwen logits（融合来源） | 2 FPS / 2048帧 | 首步原始候选分数只计算一次；每个seed从softmax(z_Q)候选分布采样，主表为实际三次采样成绩 |
 | VideoJev-4B 独立基线 | 4 FPS / 4096帧 | 分数计算一次，每个seed从候选分布采样 |
 | Controller 旧方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*p_J)`，每个seed从融合分布采样 |
 | Controller 新方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*s_J)`，每个seed从融合分布采样 |
@@ -24,7 +24,7 @@
 
 `z_Q`是Qwen首decode位置裸字母候选logits，`s_J`是VideoJev原始head logits，`p_J=softmax(s_J)`。融合还需要一份 **2 FPS VideoJev** 来源，不能拿4 FPS基线与2 FPS Qwen混用。
 
-VideoJev和两版Controller采用temperature=1、无top-k/top-p的候选CDF采样，沿用latest的固定原题序。VideoJev使用`random.Random(f'{seed}:videojev')`；两版Controller各自重置`random.Random(f'{seed}:jev_as_controller')`，使用相同均匀随机序列，以便比较公式。
+单步Qwen、VideoJev和两版Controller采用temperature=1、无top-k/top-p的候选CDF采样，沿用latest的固定原题序。单步Qwen使用`random.Random(f'{seed}:qwen36')`；VideoJev使用`random.Random(f'{seed}:videojev')`；两版Controller各自重置`random.Random(f'{seed}:jev_as_controller')`，使用相同均匀随机序列，以便比较公式。
 
 native沿用关闭thinking的原设置：temperature=.7、top_p=.8、top_k=20、min_p=0、presence_penalty=1.5、repetition_penalty=1，默认最多32768个输出token。每题使用`SHA256(f'{seed}:{question_id}')`派生torch CPU/CUDA种子。无效、歧义、截断均计错，保留在分母中。
 
@@ -151,14 +151,14 @@ runs/full/<benchmark>/
   native/seed42/                  # 实际完整自回归生成
   native/seed43/
   native/seed44/
-  summary/results.md             # 六行主方法，三seed、均值、样本方差、标准差
+  summary/results.md             # 六行六列：方法、三seed、均值、样本方差
   summary/results.json           # 精确值、分组指标、来源SHA、OR定义
   summary/*.distributions.jsonl
   summary/*.seed42.predictions.jsonl   # 同样保存seed43/44
   summary/artifact_manifest.json
 ```
 
-方差使用三次未舍入主指标的**样本方差，ddof=1**，显示单位为pp²。报告额外保留VideoJev和两版Controller的确定性argmax诊断，不拿argmax结果替代采样结果。
+方差使用三次未舍入主指标的**样本方差，ddof=1**，显示单位为pp²。主表按“方法、seed42、seed43、seed44、平均准确率、样本方差”六列展示；MLVU均值列写作“平均M-Avg”，JSON额外保留标准差。报告额外保留单步Qwen、VideoJev和两版Controller的确定性argmax诊断，不拿argmax结果替代采样结果。
 
 中断或失败后，保留原命令的参数并添加`--resume`，例如：
 
@@ -186,3 +186,18 @@ python scripts/summarize_bench_full.py \
 ```
 
 把命令中的`mlvu`替换为对应数据集即可。队列正常完成前也会执行一次独立汇总重验。
+
+## 已有结果改用六行采样表
+
+主表现采用v2 schema：单步Qwen也进行三seed候选采样，不重复填入argmax结果。原始来源分数不需重算；只有全部六个模型阶段已完成时，才能用更新后的汇总脚本生成完整表格。旧来源封存源码继续按各自记录的SHA核验，不改写来源记录。不要覆盖原汇总，选择新目录，例如：
+
+```bash
+python scripts/summarize_bench_full.py \
+  --manifest runs/full/videomme/questions.jsonl \
+  --base runs/full/videomme_fixed_python \
+  --out runs/full/videomme_fixed_python/summary_sampled_qwen
+```
+
+尚未完成的旧队列仍要求其运行源码不变，不支持中途替换源码后绕过指纹继续。可以在原代码下完成队列后单独重汇总；若选择从头运行，先停止旧队列、保留旧目录，再同步代码并使用新实验目录。若删除了包含`questions.jsonl`的目录，必须重新执行`prepare_bench_full.py`，不能直接运行runner。不要删除整个`runs`导致其他实验和有效来源丢失。
+
+三seed的成绩允许偶然相同、方差为0；代码不人为制造差异。截图仅是表格样式参考，所有数值均从当前实验预测重算。

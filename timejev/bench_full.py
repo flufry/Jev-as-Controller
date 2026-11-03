@@ -17,12 +17,13 @@ SEEDS = (42, 43, 44)
 COUNTS = dict(longvideobench=1337, videomme=2700, mlvu=2174, lvbench=1549)
 SPLITS = dict(longvideobench='validation', videomme='test', mlvu='dev_mcq', lvbench='test')
 SCHEMA = 'video_bench_full_manifest_v1'
-NAMES = dict(qwen_native='Qwen 自回归 4 FPS', qwen_logits='Qwen 首步 logits 2 FPS（确定性来源）',
-    videojev='VideoJev-4B 4 FPS（采样）', controller_probability='Controller 旧概率融合（采样）',
-    controller_loglinear='Controller log-linear（采样）', baseline_or='Qwen native OR VideoJev（双4 FPS）')
+NAMES = dict(qwen_native='Qwen3.6-35B-A3B（自回归）', qwen_logits='Qwen3.6-35B-A3B（单步生成）',
+    videojev='VideoJev-4B', controller_probability='Jev-as-Controller（旧概率融合）',
+    controller_loglinear='Jev-as-Controller（log-linear）', baseline_or='Qwen3.6-35B-A3B or VideoJev-4B')
 # 两版 Controller 使用同一均匀随机序列，沿用 latest 的比较规则。
-RNG_METHODS = dict(videojev='videojev', controller_probability='jev_as_controller',
+RNG_METHODS = dict(qwen_logits='qwen36', videojev='videojev', controller_probability='jev_as_controller',
                    controller_loglinear='jev_as_controller')
+BENCHMARK_NAMES = dict(longvideobench='LongVideoBench', videomme='Video-MME', mlvu='MLVU', lvbench='LVBench')
 
 
 def read_json(path):
@@ -403,12 +404,12 @@ def summarize(manifest, base, out=None):
         j = dict(j, probabilities=candidate_probabilities(j), logits=validate_logits(j,len(row['options'])))
         for fusion in ('probability','loglinear'):
             distributions['controller_'+fusion][key] = control(q,j,beta=2.,fusion=fusion)
+        distributions['qwen_logits'][key] = dict(q, probabilities=candidate_probabilities(q))
         distributions['videojev'][key] = dict(baseline, probabilities=candidate_probabilities(baseline))
     trials, outputs = {method:[] for method in NAMES}, {}
     for seed in SEEDS:
         selected = {method:sample_predictions(rows, dist, seed, method) for method,dist in distributions.items()}
         selected['qwen_native'] = predictions[f'native_seed{seed}']
-        selected['qwen_logits'] = predictions['qwen_controller']
         oracle, overlap = {}, Counter()
         for row in rows:
             q = selected['qwen_native'][row['id']]; j = selected['videojev'][row['id']]
@@ -435,7 +436,7 @@ def summarize(manifest, base, out=None):
             sample_variance_fraction_squared=statistics.variance(values),
             sample_variance_percentage_points_squared=statistics.variance(values)*10000,
             sample_std_percentage_points=statistics.stdev(values)*100,
-            decoding='deterministic_argmax_reused' if method=='qwen_logits' else 'oracle' if method=='baseline_or' else
+            decoding='oracle' if method=='baseline_or' else
                 'native_autoregressive_sampling' if method=='qwen_native' else 'categorical_sampling_temperature_1')
     argmax={}
     for method,dist in distributions.items():
@@ -443,13 +444,14 @@ def summarize(manifest, base, out=None):
     files={str(Path(manifest).resolve()):full['manifest_sha256'],str(Path(manifest).resolve().with_suffix('.meta.json')):full['meta_sha256'],**full['verified_inputs']}
     for src in sources.values():files.update(src['files'])
     verify_files(files)
-    report=dict(schema='video_bench_full_three_seed_summary_v1',benchmark=full['benchmark'],split=full['split'],n=len(rows),
+    report=dict(schema='video_bench_full_three_seed_summary_v2',benchmark=full['benchmark'],split=full['split'],n=len(rows),
         selection_seed=None,inference_seeds=list(SEEDS),source_seed=42,candidate_gpu_passes=3,native_gpu_passes=3,
         primary_metric='m_avg' if full['benchmark']=='mlvu' else 'accuracy',methods=methods,argmax_diagnostics=argmax,
         full_dataset=full,protocols=dict(baseline=dict(two,fps=4.,max_frames=4096),controller=two),beta=2.,temperature=1.,
-        sample_variance_ddof=1,rng="random.Random(f'{seed}:{method}'); VideoJev method=videojev; 两版Controller method=jev_as_controller; 固定原题序CDF采样",
+        sample_variance_ddof=1,rng_methods=dict(RNG_METHODS),
+        rng="random.Random(f'{seed}:{method}'); 单步Qwen method=qwen36; VideoJev method=videojev; 两版Controller method=jev_as_controller; 固定原题序CDF采样",
         or_scope='same_seed_4fps_native_qwen_and_sampled_4fps_videojev_only',sources=sources,verified_sources=files,
-        code_sha256=code_files(),note='三seed固定完整题集，方差反映答案采样。Qwen logits是一次确定性来源，重复列示不是三次独立实验；OR使用标签。')
+        code_sha256=code_files(),note='三seed固定完整题集，方差反映答案采样。单步Qwen、VideoJev和两版Controller均从各自候选分布采样；确定性GPU分数只计算一次复用，argmax另列诊断。OR使用标签。')
     if out is not None:
         out=Path(out);out.mkdir(parents=True)
         for method,dist in distributions.items():write_new(out/f'{method}.distributions.jsonl',jsonl_bytes(dist.values()))
@@ -462,16 +464,23 @@ def summarize(manifest, base, out=None):
 
 
 def markdown(report):
-    lines=[f'# {report["benchmark"]} 全量三 seed 评测','',f'固定 {report["n"]} 道题；selection_seed=None；主指标：{report["primary_metric"]}。','',
-        '| 方法 | seed42 | seed43 | seed44 | 均值 % | 样本方差 pp² | 样本标准差 pp |',
-        '|---|---:|---:|---:|---:|---:|---:|']
-    for method,s in report['methods'].items():
+    mean_label = '平均 M-Avg' if report['primary_metric']=='m_avg' else '平均准确率'
+    lines=[f'# {BENCHMARK_NAMES[report["benchmark"]]}','',
+        f'固定 {report["n"]} 道题；selection_seed=None；主指标：{report["primary_metric"]}。','',
+        f'| 方法 | seed42 | seed43 | seed44 | {mean_label} | 样本方差 |',
+        '|---|---:|---:|---:|---:|---:|']
+    best = max(s['mean'] for method,s in report['methods'].items() if method!='baseline_or')
+    for method in NAMES:
+        s = report['methods'][method]
+        mean = f'{s["mean"]*100:.2f}%'
+        if method!='baseline_or' and s['mean']==best:
+            mean = '**'+mean+'**'
         lines.append('| '+NAMES[method]+' | '+' | '.join(f'{x*100:.2f}%' for x in s['values'])+
-            f' | {s["mean"]*100:.2f} | {s["sample_variance_percentage_points_squared"]:.4f} | {s["sample_std_percentage_points"]:.4f} |')
+            f' | {mean} | {s["sample_variance_percentage_points_squared"]:.4f} |')
     lines += ['',report['note'],'',report['rng'],'',
-        'native Qwen与VideoJev独立基线：4 FPS/4096帧；融合双源：2 FPS/2048帧。两版Controller均β=2，候选采样temperature=1，无top-k/top-p。',
+        'native Qwen与VideoJev独立基线：4 FPS/4096帧；单步Qwen及融合双源：2 FPS/2048帧。单步生成指首步候选内采样，并非完整词表的自回归生成。两版Controller均β=2，候选采样temperature=1，无top-k/top-p。',
         '旧公式 softmax(z_Q + 2*p_J)；新公式 softmax(z_Q + 2*s_J)。OR对同seed的4FPS独立基线逐题取“至少一个正确”，无效native答案仍保留在分母中。',
-        'MLVU报告七任务宏平均M-Avg，各次trial同时保留总体accuracy。方差ddof=1，使用未舍入数值。','',
+        'MLVU报告七任务宏平均M-Avg，各次trial同时保留总体accuracy。样本方差单位为百分点²（pp²），ddof=1，使用未舍入数值；标准差保留在JSON中。','',
         '## 确定性 argmax 诊断（不替代主表采样结果）','']
     for method,m in report['argmax_diagnostics'].items():lines.append(f'- {NAMES[method]}：{m[m["primary_metric"]]*100:.2f}%')
     lines+=['','## 分组结果','', '| 方法 | seed | 分组 | 正确/题数 | accuracy % |','|---|---:|---|---:|---:|']

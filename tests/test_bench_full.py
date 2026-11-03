@@ -143,7 +143,7 @@ def suite(prepared):
                     invalid_reason=None if parsed['valid'] else parsed['reason'],answer=row['options'][choice] if choice is not None else None)
             else:
                 # 4FPS J与2FPS J故意不同，防止OR误用融合源。
-                values=[0.,0.,0.] if role=='videojev_baseline' else [8.,0.,-2.] if role=='qwen_controller' else [-2.,8.,0.]
+                values=[0.,0.,0.] if role=='videojev_baseline' else [1.,0.,.9] if role=='qwen_controller' else [-2.,8.,0.]
                 probabilities=softmax(values);choice=max(range(3),key=values.__getitem__)
                 pred.update(answer_index=choice,answer=row['options'][choice],probabilities=probabilities)
                 if role=='qwen_controller':pred.update(candidate_logits=values,candidate_token_ids=[32,33,34])
@@ -161,7 +161,10 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
     result=full.summarize(manifest,base,out)
     assert set(result['methods'])==set(full.NAMES)
     assert result['selection_seed'] is None and result['inference_seeds']==[42,43,44]
-    assert result['methods']['qwen_logits']['sample_variance_percentage_points_squared']==0
+    assert result['schema']=='video_bench_full_three_seed_summary_v2'
+    assert result['methods']['qwen_logits']['decoding']=='categorical_sampling_temperature_1'
+    assert result['rng_methods']['qwen_logits']=='qwen36'
+    assert result['argmax_diagnostics']['qwen_logits']['correct']==len(rows)
     assert result['primary_metric']=='m_avg'
     for seed in full.SEEDS:
         native={r['id']:r for r in full.read_jsonl(base/f'native/seed{seed}/predictions.jsonl')}
@@ -169,6 +172,12 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
         oracle=full.read_jsonl(out/f'baseline_or.seed{seed}.predictions.jsonl')
         for p in oracle:
             assert (p['answer_index'] is not None)==(native[p['id']]['answer_index']==0 or jev[p['id']]['answer_index']==0)
+        sampled_qwen=full.read_jsonl(out/f'qwen_logits.seed{seed}.predictions.jsonl')
+        source_qwen={r['id']:r for r in full.read_jsonl(base/'sources/qwen_controller/predictions.jsonl')}
+        rng=random.Random(f'{seed}:qwen36')
+        expected=[full.sample_index(source_qwen[r['id']]['probabilities'],rng) for r in rows]
+        assert [r['answer_index'] for r in sampled_qwen]==expected
+        assert any(index!=0 for index in expected)
         trial=result['methods']['baseline_or']['trials'][seed-42]
         assert sum(trial['overlap'].values())==len(rows)
     for method in full.RNG_METHODS:
@@ -352,3 +361,44 @@ def test_runner_records_failure_resumes_and_checks_completed_hashes(prepared,mon
     assert full.read_json(base/'experiment.json')['status']=='completed'
     (base/'sources/qwen_controller/metrics.json').write_text('tampered')
     with pytest.raises(ValueError,match='SHA'):runner.run(args)
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_runner_preserves_virtualenv_interpreter_symlink(tmp_path, monkeypatch, explicit):
+    # 模拟uv/venv入口指向独立Python安装，Windows也无需创建特权符号链接。
+    qwen = tmp_path/'qwen-env/bin/python'
+    videojev = tmp_path/'jev-env/bin/python'
+    base_python = tmp_path/'uv/cpython/bin/python'
+    original_resolve = Path.resolve
+    def follow_link(path, *args, **kwargs):
+        if path in (qwen, videojev):
+            return base_python
+        return original_resolve(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'resolve', follow_link)
+    monkeypatch.setattr(runner.sys, 'executable', str(qwen))
+    argv = ['--bench', 'videomme', '--base', str(tmp_path/'run')]
+    if explicit:
+        argv += ['--qwen-python', str(qwen), '--videojev-python', str(videojev)]
+    stages = runner.make_plan(runner.parser().parse_args(argv))
+    for stage in stages:
+        expected = videojev if explicit and stage['kind']=='videojev' else qwen
+        assert stage['command'][0] == str(expected)
+        assert stage['command'][0] != str(base_python)
+
+
+def test_six_row_table_layout_and_mlvu_label():
+    methods={name:dict(mean=.6+i*.01,values=[.6+i*.01]*3,
+        sample_variance_percentage_points_squared=0.,trials=[]) for i,name in enumerate(full.NAMES)}
+    report=dict(benchmark='longvideobench',n=1337,primary_metric='accuracy',methods=methods,
+        note='fixture',rng='fixture',argmax_diagnostics={})
+    text=full.markdown(report)
+    table=text.split('\n\n')[2].splitlines()
+    assert len(table)==8  # 标题行、分隔行、六个方法。
+    assert all(len(line.split('|'))==8 for line in table)
+    assert table[0]=='| 方法 | seed42 | seed43 | seed44 | 平均准确率 | 样本方差 |'
+    assert '（单步生成）' in table[3]
+    assert '**64.00%**' in table[6]  # 可部署方法中最好，OR不参与加粗比较。
+    assert '**' not in table[7]
+    assert '标准差' not in table[0]
+    report.update(benchmark='mlvu',primary_metric='m_avg')
+    assert '平均 M-Avg' in full.markdown(report)

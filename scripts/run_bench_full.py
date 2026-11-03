@@ -28,7 +28,10 @@ def make_plan(args):
     if args.videojev_gpu<0:raise ValueError('VideoJev GPU编号必须非负')
     if args.max_memory_gib is not None and args.max_memory_gib_per_gpu is not None:
         raise ValueError('两种显存预算参数不能同时指定')
-    qwen_python=str(Path(args.qwen_python).resolve());videojev_python=str(Path(args.videojev_python).resolve())
+    # 保留虚拟环境的解释器入口：resolve()会跟随uv/venv符号链接，
+    # 直接启动底层Python后无法发现虚拟环境中的torch等依赖。
+    qwen_python=os.path.abspath(os.path.expanduser(args.qwen_python))
+    videojev_python=os.path.abspath(os.path.expanduser(args.videojev_python))
     common=['--manifest',str(manifest),'--context',str(args.context),'--visual-token-budget',str(args.visual_token_budget),
             '--memory-fraction',str(args.memory_fraction)]
     qwen_args=['--gpu-count',str(len(devices))]
