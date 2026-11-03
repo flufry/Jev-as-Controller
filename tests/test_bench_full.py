@@ -116,10 +116,9 @@ def suite(prepared):
     checkpoint=lambda name:dict(path=f'/models/{name}',files={'config.json':{'sha256':'fixture'}})
     from scripts.videojev_candidate_logits import softmax
     from timejev.lvb_native_generation import extract_answer, generation_parameters
-    for role,seed in [(role,seed) for seed in full.SEEDS for role in
-            ['qwen_controller','videojev_controller','videojev_baseline',f'native_seed{seed}']]:
+    for role,seed in [(role,42) for role in ['qwen_controller','videojev_controller','videojev_baseline']]+[(f'native_seed{s}',s) for s in full.SEEDS]:
         native=role.startswith('native');fps=4. if native or role=='videojev_baseline' else 2.
-        directory=base/(f'native/seed{role.removeprefix("native_seed")}' if native else f'sources/seed{seed}/{role}')
+        directory=base/(f'native/seed{role.removeprefix("native_seed")}' if native else f'sources/{role}')
         directory.mkdir(parents=True)
         protocol=dict(name='video_bench_full_rgb_v1',fps=fps,max_frames=4096 if fps==4 else 2048,
             context=262144,visual_token_budget=24576,use_audio=False,use_subtitles=False)
@@ -162,22 +161,24 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
     result=full.summarize(manifest,base,out)
     assert set(result['methods'])==set(full.NAMES)
     assert result['selection_seed'] is None and result['inference_seeds']==[42,43,44]
-    assert result['schema']=='video_bench_full_three_seed_summary_v3'
+    assert result['schema']=='video_bench_full_three_seed_summary_v4'
     assert result['methods']['qwen_logits']['decoding']=='categorical_sampling_temperature_1'
     assert result['rng_methods']['qwen_logits']=='qwen36'
-    assert all(r['correct']==len(rows) for r in result['argmax_diagnostics']['qwen_logits'])
-    assert result['candidate_gpu_passes']==9 and result['native_gpu_passes']==3
-    assert result['source_seeds']==[42,43,44]
-    assert len(result['sources'])==12
+    assert result['argmax_diagnostics']['qwen_logits']['correct']==len(rows)
+    assert result['candidate_gpu_passes']==3 and result['native_gpu_passes']==3
+    assert result['source_seed']==42
+    assert result['candidate_source_scores_reused'] is True
+    assert result['or_scope']=='same_seed_sampled_2fps_qwen_and_sampled_4fps_videojev'
+    assert len(result['sources'])==6
     assert result['primary_metric']=='m_avg'
     for seed in full.SEEDS:
-        native={r['id']:r for r in full.read_jsonl(base/f'native/seed{seed}/predictions.jsonl')}
+        sampled={r['id']:r for r in full.read_jsonl(out/f'qwen_logits.seed{seed}.predictions.jsonl')}
         jev={r['id']:r for r in full.read_jsonl(out/f'videojev.seed{seed}.predictions.jsonl')}
         oracle=full.read_jsonl(out/f'baseline_or.seed{seed}.predictions.jsonl')
         for p in oracle:
-            assert (p['answer_index'] is not None)==(native[p['id']]['answer_index']==0 or jev[p['id']]['answer_index']==0)
+            assert (p['answer_index'] is not None)==(sampled[p['id']]['answer_index']==0 or jev[p['id']]['answer_index']==0)
         sampled_qwen=full.read_jsonl(out/f'qwen_logits.seed{seed}.predictions.jsonl')
-        source_qwen={r['id']:r for r in full.read_jsonl(base/f'sources/seed{seed}/qwen_controller/predictions.jsonl')}
+        source_qwen={r['id']:r for r in full.read_jsonl(base/'sources/qwen_controller/predictions.jsonl')}
         rng=random.Random(f'{seed}:qwen36')
         expected=[full.sample_index(source_qwen[r['id']]['probabilities'],rng) for r in rows]
         assert [r['answer_index'] for r in sampled_qwen]==expected
@@ -196,7 +197,7 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
 @pytest.mark.parametrize('mutation',['missing','answer','protocol','seed','metric','source','checkpoint','audit','generation','code'])
 def test_summary_rejects_incomplete_or_mismatched_sources(suite,mutation):
     manifest,rows,_=suite;base=manifest.parent
-    directory=base/'sources/seed42/videojev_baseline'
+    directory=base/'sources/videojev_baseline'
     path=directory/'predictions.jsonl';values=full.read_jsonl(path)
     if mutation in ('missing','answer','audit'):
         if mutation=='missing':values.pop()
@@ -224,15 +225,17 @@ def test_plan_all_methods_and_no_sampling_seed_used_for_selection(prepared):
     args=runner.parser().parse_args(['--bench','mlvu','--base',str(manifest.parent),'--qwen-gpus','0,1,2,3',
         '--max-memory-gib-per-gpu','30,45,45,45','--dry-run'])
     stages=runner.make_plan(args)
-    assert len(stages)==16
-    assert [s['name'] for s in stages]==[f'{role}_seed{seed}' for seed in full.SEEDS for role in
-        ['qwen_controller','videojev_controller','videojev_baseline','native','summary']]+['summary']
+    assert len(stages)==10
+    assert [s['name'] for s in stages]==(['qwen_controller','videojev_controller','videojev_baseline']+
+        [f'{role}_seed{seed}' for seed in full.SEEDS for role in ['native','summary']]+['summary'])
     for stage in stages[:-1]:
         assert stage['command'][stage['command'].index('--seed')+1]==str(stage['seed'])
         assert '--sample-seed' not in stage['command']
         if stage['kind']=='native':assert stage['command'][stage['command'].index('--fps')+1]=='4'
         if stage['kind']=='qwen_logits':assert stage['command'][stage['command'].index('--max-frames')+1]=='2048'
-    assert len({s['directory'] for s in stages})==16
+    assert len({s['directory'] for s in stages})==10
+    assert sum(s['kind']!='cpu' for s in stages)==6
+    assert all(s['seed']==42 for s in stages[:3])
     runner.run(args)
     assert not (manifest.parent/'experiment.json').exists()
     assert not (manifest.parent/'sources').exists()
@@ -359,14 +362,14 @@ def test_runner_records_failure_resumes_and_checks_completed_hashes(prepared,mon
     with pytest.raises(RuntimeError,match='退出码7'):runner.run(args)
     state=full.read_json(base/'experiment.json')
     assert state['status']=='failed'
-    assert state['steps']['qwen_controller_seed42']['status']=='completed'
-    assert (base/'logs/videojev_controller_seed42.attempt1.exitcode').read_text().strip()=='7'
+    assert state['steps']['qwen_controller']['status']=='completed'
+    assert (base/'logs/videojev_controller.attempt1.exitcode').read_text().strip()=='7'
     args.resume=True
     runner.run(args)
-    assert len(calls)==17  # 16 stages plus the failed attempt; completed source not rerun.
+    assert len(calls)==11  # 10 stages plus the failed attempt; completed source not rerun.
     assert '--resume' in calls[2]
     assert full.read_json(base/'experiment.json')['status']=='completed'
-    (base/'sources/seed42/qwen_controller/metrics.json').write_text('tampered')
+    (base/'sources/qwen_controller/metrics.json').write_text('tampered')
     with pytest.raises(ValueError,match='SHA'):runner.run(args)
 
 
@@ -411,42 +414,128 @@ def test_six_row_table_layout_and_mlvu_label():
     assert '平均 M-Avg' in full.markdown(report)
 
 
-def test_per_seed_summary_uses_only_its_four_runs(suite):
+def test_per_seed_summary_uses_shared_scores_and_own_native(suite):
     manifest,rows,_=suite;base=manifest.parent
     result=full.summarize(manifest,base,seeds=(43,))
     assert result['inference_seeds']==[43] and len(result['sources'])==4
     assert result['candidate_gpu_passes']==3 and result['native_gpu_passes']==1
-    assert all(name.endswith('_seed43') for name in result['sources'])
+    assert set(result['sources'])=={'qwen_controller','videojev_controller','videojev_baseline','native_seed43'}
     assert all(s['sample_variance_percentage_points_squared'] is None for s in result['methods'].values())
     assert '—（单seed）' in full.markdown(result)
     all_seeds=full.summarize(manifest,base)
     for method in result['methods']:
         assert result['methods'][method]['trials'][0]==all_seeds['methods'][method]['trials'][1]
-    # seed43的结果改变不应影响seed42或44；其中一个seed来源无效应直接拒绝。
-    p=base/'sources/seed43/qwen_controller/run.json'
-    run=full.read_json(p);run['identity']['seed']=42;p.write_bytes(json_bytes(run))
+    # native43的种子错误只阻止该seed，不影响单独核验seed42。
+    p=base/'native/seed43/run.json'
+    run=full.read_json(p);run['identity']['inference_seed']=42;p.write_bytes(json_bytes(run))
     with pytest.raises(ValueError,match='seed'):full.summarize(manifest,base,seeds=(43,))
     assert full.summarize(manifest,base,seeds=(42,))['inference_seeds']==[42]
 
 
-def test_each_seed_samples_its_own_videojev_distribution(suite):
+def test_each_seed_samples_same_videojev_distribution_with_own_rng(suite):
     manifest,rows,_=suite;base=manifest.parent;out=base/'summary'
     full.summarize(manifest,base,out)
     seen=[]
     for seed in full.SEEDS:
-        source=full.read_jsonl(base/f'sources/seed{seed}/videojev_baseline/predictions.jsonl')
+        source=full.read_jsonl(base/'sources/videojev_baseline/predictions.jsonl')
         probs={p['id']:p['probabilities'] for p in source}
         actual=full.read_jsonl(out/f'videojev.seed{seed}.predictions.jsonl')
         rng=random.Random(f'{seed}:videojev')
         assert [p['answer_index'] for p in actual]==[full.sample_index(probs[r['id']],rng) for r in rows]
         assert all(p['probabilities']==probs[p['id']] for p in actual)
         seen.append(actual[0]['probabilities'])
-    assert seen[0]!=seen[1]!=seen[2]
+    assert seen[0]==seen[1]==seen[2]
 
 
 @pytest.mark.parametrize('kind',['qwen_logits','videojev'])
 @pytest.mark.parametrize('seed',[42,43,44])
-def test_source_entry_accepts_independent_seed_runs(kind,seed):
+def test_candidate_entry_requires_shared_seed42(kind,seed):
     from scripts.eval_bench_full_source import parser,validate
     args=parser().parse_args(['--kind',kind,'--manifest','manifest','--out','out','--fps','2','--max-frames','2048','--seed',str(seed)])
-    validate(args)
+    if seed==42:validate(args)
+    else:
+        with pytest.raises(ValueError,match='seed42'):validate(args)
+
+
+def test_or_uses_sampled_qwen_not_native(suite):
+    manifest,rows,_=suite;base=manifest.parent
+    before=full.summarize(manifest,base)
+    from timejev.lvb_native_generation import extract_answer
+    for seed in full.SEEDS:
+        d=base/f'native/seed{seed}'
+        preds=full.read_jsonl(d/'predictions.jsonl')
+        for pred in preds:
+            parsed=extract_answer('A',pred['options'])
+            pred.update(response='A',raw_response='A',parsed=parsed,answer_index=0,valid=True,invalid_reason=None,answer=pred['options'][0])
+        (d/'predictions.jsonl').write_bytes(jsonl_bytes(preds))
+        saved=full.read_json(d/'metrics.json');saved.update(full.score_answers(rows,{p['id']:p for p in preds},'mlvu'))
+        (d/'metrics.json').write_bytes(json_bytes(saved))
+    after=full.summarize(manifest,base)
+    assert before['methods']['baseline_or']==after['methods']['baseline_or']
+    assert before['methods']['qwen_native']!=after['methods']['qwen_native']
+
+
+def test_shared_source_layout_rejects_ambiguity(tmp_path):
+    (tmp_path/'sources/qwen_controller').mkdir(parents=True)
+    (tmp_path/'sources/seed42/qwen_controller').mkdir(parents=True)
+    with pytest.raises(ValueError,match='两种布局'):full.candidate_directories(tmp_path)
+
+
+def test_reuse_completed_sources_keeps_originals_and_skips_gpu(suite,tmp_path,monkeypatch):
+    manifest,rows,metadata=suite;old=manifest.parent;new=tmp_path/'new_queue'
+    args=runner.parser().parse_args(['--bench','mlvu','--manifest',str(manifest),'--base',str(new),
+        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev'])
+    stages=runner.make_plan(args)
+    assert all(s['reuse'] for s in stages[:3])
+    assert all(Path(s['directory']).is_relative_to(old) for s in stages[:3])
+    originals={str(p):p.read_bytes() for p in (old/'sources').rglob('*') if p.is_file()}
+    calls=[]
+    class StopBeforeNative:
+        def __init__(self,command,**kwargs):
+            calls.append(command)
+            raise RuntimeError('stop before GPU')
+    monkeypatch.setattr(runner.subprocess,'Popen',StopBeforeNative)
+    monkeypatch.setattr(runner.subprocess,'check_output',lambda *a,**kw:'fixture')
+    with pytest.raises(RuntimeError,match='stop before GPU'):runner.run(args)
+    state=full.read_json(new/'experiment.json')
+    assert all(state['steps'][s['name']]['status']=='reused' for s in stages[:3])
+    assert len(calls)==1 and calls[0][calls[0].index('--kind')+1]=='native'
+    assert all(Path(p).read_bytes()==data for p,data in originals.items())
+    assert not (new/'sources').exists()
+
+
+def test_partial_source_reuse_fails_before_gpu(suite,tmp_path,monkeypatch):
+    manifest,rows,metadata=suite;old=manifest.parent
+    p=old/'sources/videojev_controller/predictions.jsonl'
+    p.write_bytes(jsonl_bytes(full.read_jsonl(p)[:-1]))
+    args=runner.parser().parse_args(['--bench','mlvu','--manifest',str(manifest),'--base',str(tmp_path/'new'),
+        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev'])
+    monkeypatch.setattr(runner.subprocess,'Popen',lambda *a,**kw:pytest.fail('不应启动GPU'))
+    monkeypatch.setattr(runner.subprocess,'check_output',lambda *a,**kw:'fixture')
+    with pytest.raises(ValueError,match='结果缺题'):runner.run(args)
+
+def test_summary_reads_old_seed42_layout_without_relabeling(suite,tmp_path):
+    import shutil
+    manifest,rows,_=suite;old=manifest.parent;copied=tmp_path/'old_per_seed'
+    target=copied/'sources/seed42'
+    shutil.copytree(old/'sources',target)
+    originals={str(p):p.read_bytes() for p in copied.rglob('*') if p.is_file()}
+    expected=full.summarize(manifest,old)
+    actual=full.summarize(manifest,old,source_base=copied)
+    assert actual['methods']==expected['methods']
+    assert all('seed42' in actual['sources'][role]['directory'] for role in
+        ('qwen_controller','videojev_controller','videojev_baseline'))
+    assert all(Path(p).read_bytes()==content for p,content in originals.items())
+
+
+def test_reuse_dry_run_validates_sources_without_outputs(suite,tmp_path):
+    manifest,_,_=suite;old=manifest.parent;out=tmp_path/'dry_queue'
+    args=runner.parser().parse_args(['--bench','mlvu','--manifest',str(manifest),'--base',str(out),
+        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev','--dry-run'])
+    report=runner.run(args)
+    assert set(report['identity']['reused_sources'])=={'qwen_controller','videojev_controller','videojev_baseline'}
+    assert not out.exists()
+    path=old/'sources/qwen_controller/predictions.jsonl'
+    path.write_bytes(jsonl_bytes(full.read_jsonl(path)[:-1]))
+    with pytest.raises(ValueError,match='结果缺题'):runner.run(args)
+    assert not out.exists()

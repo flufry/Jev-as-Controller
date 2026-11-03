@@ -1,4 +1,4 @@
-"""汇总/只读重验四个benchmark的全量三seed结果及4FPS基线OR。"""
+"""汇总/只读重验四个benchmark的全量三seed结果及单步Qwen/VideoJev采样OR。"""
 import argparse
 import json
 from pathlib import Path
@@ -12,11 +12,12 @@ def main(argv=None):
     parser.add_argument('--manifest',required=True)
     parser.add_argument('--base',required=True)
     parser.add_argument('--out',required=True)
-    parser.add_argument('--seed',type=int,choices=SEEDS,help='只汇总该seed四组独立运行；省略时汇总全部三个seed')
+    parser.add_argument('--source-base',help='已有三份候选来源的实验目录；默认与--base相同，可读旧per-seed目录中的seed42')
+    parser.add_argument('--seed',type=int,choices=SEEDS,help='只汇总该seed答案：共用候选来源及该seed native；省略时汇总全部三个seed')
     parser.add_argument('--verify',action='store_true',help='不写文件，重算全部来源并核对已保存汇总')
     args=parser.parse_args(argv)
     result=summarize(args.manifest,args.base,None if args.verify else args.out,
-        seeds=(args.seed,) if args.seed is not None else SEEDS)
+        seeds=(args.seed,) if args.seed is not None else SEEDS,source_base=args.source_base)
     if args.verify:
         out=Path(args.out)
         artifact=read_json(out/'artifact_manifest.json')['files']

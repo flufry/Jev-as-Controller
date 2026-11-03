@@ -19,7 +19,7 @@ SPLITS = dict(longvideobench='validation', videomme='test', mlvu='dev_mcq', lvbe
 SCHEMA = 'video_bench_full_manifest_v1'
 NAMES = dict(qwen_native='Qwen3.6-35B-A3B（自回归）', qwen_logits='Qwen3.6-35B-A3B（单步生成）',
     videojev='VideoJev-4B', controller_probability='Jev-as-Controller（旧概率融合）',
-    controller_loglinear='Jev-as-Controller（log-linear）', baseline_or='Qwen3.6-35B-A3B or VideoJev-4B')
+    controller_loglinear='Jev-as-Controller（log-linear）', baseline_or='Qwen3.6-35B-A3B（单步生成）or VideoJev-4B')
 # 两版 Controller 使用同一均匀随机序列，沿用 latest 的比较规则。
 RNG_METHODS = dict(qwen_logits='qwen36', videojev='videojev', controller_probability='jev_as_controller',
                    controller_loglinear='jev_as_controller')
@@ -340,10 +340,12 @@ def read_source(directory, rows, full, role, *, expected_seed=None):
     hashes.update(settings.get('full_code_sha256', {}))
     if not hashes:
         raise ValueError('来源缺少封存源码指纹')
+    archived_files = {}
     for relative, digest in hashes.items():
         relative = Path(relative)
         if relative.is_absolute() or '..' in relative.parts:
             raise ValueError('非法来源源码路径')
+        archived_files[str(directory/'source'/relative)] = digest
         verify_files({str(directory/'source'/relative):digest})
     predictions = _read_predictions(directory/'predictions.jsonl', rows)
     for row in rows:
@@ -365,12 +367,26 @@ def read_source(directory, rows, full, role, *, expected_seed=None):
             raise ValueError('视觉 token/尺寸记录不一致')
     actual = score_answers(rows, predictions, full['benchmark'])
     _check_metrics(read_json(directory/'metrics.json'), actual)
-    return predictions, dict(directory=str(directory), identity=identity, files={str(directory/f):sha256(directory/f)
-        for f in ('run.json','metrics.json','predictions.jsonl')}), actual
+    return predictions, dict(directory=str(directory), identity=identity, files={**archived_files, **{str(directory/f):sha256(directory/f)
+        for f in ('run.json','metrics.json','predictions.jsonl')}}), actual
 
 
-def summarize(manifest, base, out=None, *, seeds=SEEDS):
-    """重算所有来源与种子；OR 只使用4FPS独立基线，绝不使用融合源替代。"""
+def candidate_directories(base):
+    """读取共享来源，或显式读取旧per-seed实验的seed42；不猜测混合两套来源。"""
+    base=Path(base).resolve()
+    shared=base/'sources'
+    repeated=base/'sources/seed42'
+    roles=('qwen_controller','videojev_controller','videojev_baseline')
+    has_shared=any((shared/role).exists() for role in roles)
+    has_repeated=any((repeated/role).exists() for role in roles)
+    if has_shared and has_repeated:
+        raise ValueError('来源同时含共享与per-seed两种布局，不能自动选择')
+    directory=repeated if has_repeated else shared
+    return {role:directory/role for role in roles}
+
+
+def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
+    """共用seed42候选来源、三次答案采样；OR与latest公开表一致，使用单步Qwen+4FPS VideoJev。"""
     from scripts.eval_longvideobench_controller import control
     from scripts.videojev_candidate_logits import candidate_probabilities, validate_logits
     rows, full = read_full(manifest); base = Path(base).resolve()
@@ -380,56 +396,48 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS):
     if seeds not in (SEEDS, *((seed,) for seed in SEEDS)):
         raise ValueError('只支持完整42/43/44或单个seed汇总')
     sources, predictions, source_metrics = {}, {}, {}
-    roles={}
+    roles={role:(directory,role,42) for role,directory in candidate_directories(source_base or base).items()}
     for seed in seeds:
-        for role in ('qwen_controller','videojev_controller','videojev_baseline'):
-            roles[f'{role}_seed{seed}']=(base/f'sources/seed{seed}'/role,role,seed)
         roles[f'native_seed{seed}']=(base/f'native/seed{seed}',f'native_seed{seed}',seed)
     for key,(directory,role,seed) in roles.items():
         predictions[key], sources[key], source_metrics[key] = read_source(directory, rows, full, role, expected_seed=seed)
-    first_qwen=f'qwen_controller_seed{seeds[0]}'
-    two = sources[first_qwen]['identity']['protocol']
+    two = sources['qwen_controller']['identity']['protocol']
     for key, src in sources.items():
         expected = dict(two, fps=4., max_frames=4096) if key.startswith(('native','videojev_baseline')) else two
-        if src['identity']['protocol'] != expected or src['identity']['media'] != sources[first_qwen]['identity']['media']:
+        if src['identity']['protocol'] != expected or src['identity']['media'] != sources['qwen_controller']['identity']['media']:
             raise ValueError('来源输入协议或完整媒体指纹不一致')
-    # 四种来源各自跨seed只允许seed变化，模型、设置、依赖和源码须一致。
-    for role in ('qwen_controller','videojev_controller','videojev_baseline','native'):
-        first=sources[f'{role}_seed{seeds[0]}']['identity']
-        for seed in seeds[1:]:
-            other=sources[f'{role}_seed{seed}']['identity']
-            if any(first.get(k)!=other.get(k) for k in ('checkpoint','settings','packages','code_sha256')):
-                raise ValueError(f'三个seed的来源设置、checkpoint、依赖或源码不同：{role}')
-    for seed in seeds:
-        for a,b in [('videojev_controller','videojev_baseline'),('qwen_controller','native')]:
-            if sources[f'{a}_seed{seed}']['identity']['checkpoint'] != sources[f'{b}_seed{seed}']['identity']['checkpoint']:
-                raise ValueError('同模型的来源 checkpoint 指纹不同')
+    first=sources[f'native_seed{seeds[0]}']['identity']
+    for seed in seeds[1:]:
+        other=sources[f'native_seed{seed}']['identity']
+        if any(first.get(k)!=other.get(k) for k in ('checkpoint','settings','packages','code_sha256')):
+            raise ValueError('三个native seed的来源设置、checkpoint、依赖或源码不同')
+    for a,b in [('videojev_controller','videojev_baseline'), *[('qwen_controller',f'native_seed{seed}') for seed in seeds]]:
+        if sources[a]['identity']['checkpoint'] != sources[b]['identity']['checkpoint']:
+            raise ValueError('同模型的来源 checkpoint 指纹不同')
     trials, outputs = {method:[] for method in NAMES}, {}
-    all_distributions, argmax = {}, {method:[] for method in RNG_METHODS}
-    for seed in seeds:
-        distributions = {method:{} for method in RNG_METHODS}
-        for row in rows:
-            key = row['id']; q = predictions[f'qwen_controller_seed{seed}'][key]
-            j = predictions[f'videojev_controller_seed{seed}'][key]
-            baseline = predictions[f'videojev_baseline_seed{seed}'][key]
-            if q['preprocessing'] != j['preprocessing']:
-                raise ValueError('融合两源逐题视频预处理不一致')
+    distributions = {method:{} for method in RNG_METHODS}
+    for row in rows:
+        key = row['id']; q = predictions['qwen_controller'][key]
+        j = predictions['videojev_controller'][key]
+        baseline = predictions['videojev_baseline'][key]
+        if q['preprocessing'] != j['preprocessing']:
+            raise ValueError('融合两源逐题视频预处理不一致')
+        for seed in seeds:
             if predictions[f'native_seed{seed}'][key]['preprocessing'] != baseline['preprocessing']:
                 raise ValueError('4FPS独立基线逐题视频预处理不一致')
-            j = dict(j, probabilities=candidate_probabilities(j), logits=validate_logits(j,len(row['options'])))
-            for fusion in ('probability','loglinear'):
-                distributions['controller_'+fusion][key] = control(q,j,beta=2.,fusion=fusion)
-            distributions['qwen_logits'][key] = dict(q, probabilities=candidate_probabilities(q))
-            distributions['videojev'][key] = dict(baseline, probabilities=candidate_probabilities(baseline))
-        all_distributions[seed]=distributions
-        for method,dist in distributions.items():
-            argmax[method].append(dict(score_answers(rows,dist,full['benchmark']),inference_seed=seed))
+        j = dict(j, probabilities=candidate_probabilities(j), logits=validate_logits(j,len(row['options'])))
+        for fusion in ('probability','loglinear'):
+            distributions['controller_'+fusion][key] = control(q,j,beta=2.,fusion=fusion)
+        distributions['qwen_logits'][key] = dict(q, probabilities=candidate_probabilities(q))
+        distributions['videojev'][key] = dict(baseline, probabilities=candidate_probabilities(baseline))
+    argmax = {method:score_answers(rows,dist,full['benchmark']) for method,dist in distributions.items()}
+    for seed in seeds:
         selected = {method:sample_predictions(rows, dist, seed, method) for method,dist in distributions.items()}
         selected['qwen_native'] = predictions[f'native_seed{seed}']
         oracle, overlap = {}, Counter()
         for row in rows:
-            q = selected['qwen_native'][row['id']]; j = selected['videojev'][row['id']]
-            qhit = q['valid'] and not q['truncated'] and q['answer_index']==row['answer_index']
+            q = selected['qwen_logits'][row['id']]; j = selected['videojev'][row['id']]
+            qhit = q['answer_index']==row['answer_index']
             jhit = j['answer_index']==row['answer_index']
             overlap['both_correct' if qhit and jhit else 'qwen_only' if qhit else 'videojev_only' if jhit else 'both_wrong'] += 1
             # 使用标签的 OR 仅用于事后统计，明确标记为 oracle，不反馈给模型或采样。
@@ -457,20 +465,20 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS):
     files={str(Path(manifest).resolve()):full['manifest_sha256'],str(Path(manifest).resolve().with_suffix('.meta.json')):full['meta_sha256'],**full['verified_inputs']}
     for src in sources.values():files.update(src['files'])
     verify_files(files)
-    report=dict(schema='video_bench_full_three_seed_summary_v3',benchmark=full['benchmark'],split=full['split'],n=len(rows),
-        selection_seed=None,inference_seeds=list(seeds),source_seeds=list(seeds),candidate_gpu_passes=3*len(seeds),native_gpu_passes=len(seeds),
-        execution_protocol='four_gpu_runs_per_seed_v1',
+    report=dict(schema='video_bench_full_three_seed_summary_v4',benchmark=full['benchmark'],split=full['split'],n=len(rows),
+        selection_seed=None,inference_seeds=list(seeds),source_seed=42,candidate_gpu_passes=3,native_gpu_passes=len(seeds),
+        execution_protocol='shared_candidate_sources_three_sampling_seeds_v1',
+        candidate_source_scores_reused=True,reference_latest_commit='cb0518a5ea12129384489ab8eabcaf57956e9d2e',
         primary_metric='m_avg' if full['benchmark']=='mlvu' else 'accuracy',methods=methods,argmax_diagnostics=argmax,
         full_dataset=full,protocols=dict(baseline=dict(two,fps=4.,max_frames=4096),controller=two),beta=2.,temperature=1.,
         sample_variance_ddof=1,rng_methods=dict(RNG_METHODS),
         rng="random.Random(f'{seed}:{method}'); 单步Qwen method=qwen36; VideoJev method=videojev; 两版Controller method=jev_as_controller; 固定原题序CDF采样",
-        or_scope='same_seed_4fps_native_qwen_and_sampled_4fps_videojev_only',sources=sources,verified_sources=files,
-        code_sha256=code_files(),note='每个seed独立执行四组GPU评测；单步Qwen、VideoJev和两版Controller仅从对应seed的分布采样，不跨seed复用。argmax另列诊断。OR使用标签。')
+        or_scope='same_seed_sampled_2fps_qwen_and_sampled_4fps_videojev',sources=sources,verified_sources=files,
+        code_sha256=code_files(),note='固定全量题集；三份候选分数各计算一次，seed42/43/44只控制候选答案采样；native实际生成三遍。OR使用同seed的单步Qwen采样与4FPS VideoJev采样答案，非native OR。argmax另列诊断。')
     if out is not None:
         out=Path(out);out.mkdir(parents=True)
-        for seed,distributions in all_distributions.items():
-            for method,dist in distributions.items():
-                write_new(out/f'{method}.seed{seed}.distributions.jsonl',jsonl_bytes(dist.values()))
+        for method,dist in distributions.items():
+            write_new(out/f'{method}.distributions.jsonl',jsonl_bytes(dist.values()))
         for (method,seed),by_id in outputs.items():write_new(out/f'{method}.seed{seed}.predictions.jsonl',jsonl_bytes(by_id.values()))
         write_new(out/'results.json',json_bytes(report));write_new(out/'results.md',markdown(report).encode('utf-8'))
         snapshot(out,report['code_sha256'])
@@ -497,12 +505,11 @@ def markdown(report):
             f' | {mean} | {variance_text} |')
     lines += ['',report['note'],'',report['rng'],'',
         'native Qwen与VideoJev独立基线：4 FPS/4096帧；单步Qwen及融合双源：2 FPS/2048帧。单步生成指首步候选内采样，并非完整词表的自回归生成。两版Controller均β=2，候选采样temperature=1，无top-k/top-p。',
-        '旧公式 softmax(z_Q + 2*p_J)；新公式 softmax(z_Q + 2*s_J)。OR对同seed的4FPS独立基线逐题取“至少一个正确”，无效native答案仍保留在分母中。',
+        '旧公式 softmax(z_Q + 2*p_J)；新公式 softmax(z_Q + 2*s_J)。OR对同seed的单步Qwen 2FPS采样答案与VideoJev 4FPS采样答案逐题取“至少一个正确”，与latest公开表定义一致；native不参与该OR。无效native答案在自身准确率中计错并保留分母。',
         'MLVU报告七任务宏平均M-Avg，各次trial同时保留总体accuracy。样本方差单位为百分点²（pp²），ddof=1，使用未舍入数值；标准差保留在JSON中。','',
         '## 确定性 argmax 诊断（不替代主表采样结果）','']
-    for method,records in report['argmax_diagnostics'].items():
-        for m in records:
-            lines.append(f'- {NAMES[method]} seed{m["inference_seed"]}：{m[m["primary_metric"]]*100:.2f}%')
+    for method,m in report['argmax_diagnostics'].items():
+        lines.append(f'- {NAMES[method]}（共用来源）：{m[m["primary_metric"]]*100:.2f}%')
     lines+=['','## 分组结果','', '| 方法 | seed | 分组 | 正确/题数 | accuracy % |','|---|---:|---|---:|---:|']
     for method,s in report['methods'].items():
         for trial in s['trials']:

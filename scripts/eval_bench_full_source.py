@@ -36,8 +36,8 @@ def validate(args):
     if args.kind=='native':
         if args.seed not in (42,43,44) or (args.fps,args.max_frames)!=(4.,4096):
             raise ValueError('全量native固定4FPS/4096，seed为42/43/44')
-    elif args.seed not in (42,43,44) or (args.fps,args.max_frames) not in ((2.,2048),(4.,4096)):
-        raise ValueError('来源必须独立执行对应seed42/43/44，帧率/上限必须匹配')
+    elif args.seed!=42 or (args.fps,args.max_frames) not in ((2.,2048),(4.,4096)):
+        raise ValueError('候选来源固定seed42只执行一次，帧率/上限必须匹配')
     if args.kind=='qwen_logits' and args.fps!=2.:
         raise ValueError('融合用Qwen来源固定2FPS/2048')
     if args.context<1024 or not 0<args.visual_token_budget<=args.context*4//5 or not 0<args.memory_fraction<=1:
