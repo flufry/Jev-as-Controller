@@ -68,7 +68,7 @@ Qwen 设置为 `temperature=0.7, top_p=0.8, top_k=20, min_p=0, presence_penalty=
 
 ## 四个 benchmark 全量三 seed（新入口）
 
-支持 LongVideoBench 1337题、Video-MME 2700题、MLVU-Dev 2174题和LVBench 1549题。三个seed固定为42/43/44，使用相同完整题集；Qwen native 4 FPS实际生成三遍，单步Qwen 2 FPS、VideoJev 4 FPS和两版Controller按候选概率分别采样三次。融合使用独立的Qwen/VideoJev双2 FPS来源；OR使用同seed的4 FPS native Qwen与4 FPS VideoJev基线，不能替换成融合来源。
+支持 LongVideoBench 1337题、Video-MME 2700题、MLVU-Dev 2174题和LVBench 1549题。三个seed固定为42/43/44，使用相同完整题集；**每个seed独立运行Qwen native 4 FPS、Qwen logits 2 FPS、VideoJev 2 FPS及4 FPS四组GPU评测，共12组**。单步Qwen、VideoJev和两版Controller从对应seed的候选概率采样；每个seed先独立汇总，最后生成三seed总表，不跨seed复用来源分数。融合使用独立的Qwen/VideoJev双2 FPS来源；OR使用同seed的4 FPS native Qwen与4 FPS VideoJev基线，不能替换成融合来源。
 
 准备、运行、断点恢复及各benchmark分开的完整命令见 [全量三seed运行说明](docs/BENCH_FULL_THREE_SEEDS.md)。新结果独立写入`runs/full/<benchmark>/summary/results.md`，包含三seed、均值、ddof=1样本方差及分任务结果；MLVU主表使用M-Avg。下方历史结果不会被新流程覆盖。
 

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from timejev.bench_full import read_json, sha256, summarize, verify_files
+from timejev.bench_full import SEEDS, read_json, sha256, summarize, verify_files
 
 
 def main(argv=None):
@@ -12,9 +12,11 @@ def main(argv=None):
     parser.add_argument('--manifest',required=True)
     parser.add_argument('--base',required=True)
     parser.add_argument('--out',required=True)
+    parser.add_argument('--seed',type=int,choices=SEEDS,help='只汇总该seed四组独立运行；省略时汇总全部三个seed')
     parser.add_argument('--verify',action='store_true',help='不写文件，重算全部来源并核对已保存汇总')
     args=parser.parse_args(argv)
-    result=summarize(args.manifest,args.base,None if args.verify else args.out)
+    result=summarize(args.manifest,args.base,None if args.verify else args.out,
+        seeds=(args.seed,) if args.seed is not None else SEEDS)
     if args.verify:
         out=Path(args.out)
         artifact=read_json(out/'artifact_manifest.json')['files']

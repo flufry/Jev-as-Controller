@@ -1,6 +1,6 @@
 # 四个视频 benchmark：全量固定题集、三个答案采样 seed
 
-本流程在当前仓库实现，参考 `latest` 提交 `cb0518a5ea12129384489ab8eabcaf57956e9d2e` 的完整题集与答案采样协议。无需等待历史100题实验，不使用latest中的本机运行目录。**全量指有公开标签的评测集，不是训练集或隐藏标签测试集。**
+本流程在当前仓库实现。**每个seed独立执行四组完整GPU评测，不跨seed复用候选分数**；候选答案采样沿用latest的temperature=1、固定题序CDF规则。无需等待历史100题实验，不使用latest中的本机运行目录。**全量指有公开标签的评测集，不是训练集或隐藏标签测试集。**
 
 | benchmark | 完整题数 | 主指标 |
 |---|---:|---|
@@ -16,10 +16,10 @@
 | 报告方法 | 视频输入 | 三seed的含义 |
 |---|---|---|
 | Qwen3.6 自回归 | 4 FPS / 4096帧 | 实际执行三遍完整采样生成，逐题保存输出token和解析 |
-| 单步 Qwen logits（融合来源） | 2 FPS / 2048帧 | 首步原始候选分数只计算一次；每个seed从softmax(z_Q)候选分布采样，主表为实际三次采样成绩 |
-| VideoJev-4B 独立基线 | 4 FPS / 4096帧 | 分数计算一次，每个seed从候选分布采样 |
-| Controller 旧方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*p_J)`，每个seed从融合分布采样 |
-| Controller 新方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*s_J)`，每个seed从融合分布采样 |
+| 单步 Qwen logits（融合来源） | 2 FPS / 2048帧 | 每个seed重新执行全量首步前向，再从该seed的softmax(z_Q)候选分布采样 |
+| VideoJev-4B 独立基线 | 4 FPS / 4096帧 | 每个seed重新执行全量4FPS前向，再从该seed的候选分布采样 |
+| Controller 旧方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*p_J)`，只融合并采样当前seed的两份2FPS来源 |
+| Controller 新方法 | 两源均2 FPS / 2048帧 | `softmax(z_Q + 2*s_J)`，只融合并采样当前seed的两份2FPS来源 |
 | Qwen OR VideoJev-4B | **两独立基线均4 FPS** | 同seed的native Qwen与采样VideoJev至少一个答对；使用真实标签的事后参照 |
 
 `z_Q`是Qwen首decode位置裸字母候选logits，`s_J`是VideoJev原始head logits，`p_J=softmax(s_J)`。融合还需要一份 **2 FPS VideoJev** 来源，不能拿4 FPS基线与2 FPS Qwen混用。
@@ -28,7 +28,9 @@
 
 native沿用关闭thinking的原设置：temperature=.7、top_p=.8、top_k=20、min_p=0、presence_penalty=1.5、repetition_penalty=1，默认最多32768个输出token。每题使用`SHA256(f'{seed}:{question_id}')`派生torch CPU/CUDA种子。无效、歧义、截断均计错，保留在分母中。
 
-默认context=262144、visual-token-budget=24576、不使用字幕/音频。全量各方法的同视频问题组从头计算，不拼接旧子集分数。三份确定性来源加三遍native，共**六个GPU阶段**；候选采样和汇总只用CPU。
+默认context=262144、visual-token-budget=24576、不使用字幕/音频。全量各方法的同视频问题组从头计算，不拼接旧子集分数。每个seed分别执行Qwen logits 2FPS、VideoJev 2FPS、VideoJev 4FPS、Qwen native 4FPS，共**12个GPU阶段**。每完成一个seed的四组模型评测，立即执行该seed的CPU采样、融合和OR汇总，最后计算三个seed总表（总计16个队列阶段）。
+
+Qwen logits的GPU阶段仍为确定性首步取分，最终“单步生成”成绩从对应seed的候选分布采样。各模型入口都初始化Python/NumPy/Torch随机种子。独立重跑不保证分数一定不同；不人为制造方差。
 
 ## 公共环境和GPU参数
 
@@ -145,15 +147,20 @@ runs/full/<benchmark>/
   source/                         # 本次封存源码
   logs/<stage>.attemptN.log
   logs/<stage>.attemptN.exitcode
-  sources/qwen_controller/        # 2FPS单步Qwen分数，一次前向实验
-  sources/videojev_controller/    # 2FPS VideoJev分数，一次前向实验
-  sources/videojev_baseline/      # 4FPS VideoJev分数，一次前向实验
+  sources/seed42/qwen_controller/     # seed42独立2FPS Qwen前向
+  sources/seed42/videojev_controller/ # seed42独立2FPS VideoJev前向
+  sources/seed42/videojev_baseline/   # seed42独立4FPS VideoJev前向
+  sources/seed43/                    # 同样三份来源，实际重新执行
+  sources/seed44/                    # 同样三份来源，实际重新执行
   native/seed42/                  # 实际完整自回归生成
   native/seed43/
   native/seed44/
+  per_seed/seed42/results.md       # 四组完成后立即生成该seed六方法表
+  per_seed/seed43/results.md
+  per_seed/seed44/results.md
   summary/results.md             # 六行六列：方法、三seed、均值、样本方差
   summary/results.json           # 精确值、分组指标、来源SHA、OR定义
-  summary/*.distributions.jsonl
+  summary/*.seed42.distributions.jsonl # 同样保存seed43/44，各自分布
   summary/*.seed42.predictions.jsonl   # 同样保存seed43/44
   summary/artifact_manifest.json
 ```
@@ -187,17 +194,31 @@ python scripts/summarize_bench_full.py \
 
 把命令中的`mlvu`替换为对应数据集即可。队列正常完成前也会执行一次独立汇总重验。
 
-## 已有结果改用六行采样表
+## 旧队列与新版队列不可混用
 
-主表现采用v2 schema：单步Qwen也进行三seed候选采样，不重复填入argmax结果。原始来源分数不需重算；只有全部六个模型阶段已完成时，才能用更新后的汇总脚本生成完整表格。旧来源封存源码继续按各自记录的SHA核验，不改写来源记录。不要覆盖原汇总，选择新目录，例如：
+当前队列schema为`video_bench_full_queue_v2`，执行协议为`four_gpu_runs_per_seed_v1`，三seed总表schema为`video_bench_full_three_seed_summary_v3`。旧版只执行一次候选来源的队列不满足本协议，不能以改写seed或复制来源目录方式冒充三次独立GPU运行，也不能直接用旧experiment.json恢复新队列。
+
+若已有旧实验，先停止并保留旧目录，同步当前代码后使用新base；完整题集清单可直接复用。例如Video-MME：
 
 ```bash
-python scripts/summarize_bench_full.py \
+python scripts/run_bench_full.py --bench videomme \
   --manifest runs/full/videomme/questions.jsonl \
-  --base runs/full/videomme_fixed_python \
-  --out runs/full/videomme_fixed_python/summary_sampled_qwen
+  --base runs/full/videomme_per_seed4 "${COMMON[@]}" --dry-run
+
+python scripts/run_bench_full.py --bench videomme \
+  --manifest runs/full/videomme/questions.jsonl \
+  --base runs/full/videomme_per_seed4 "${COMMON[@]}"
 ```
 
-尚未完成的旧队列仍要求其运行源码不变，不支持中途替换源码后绕过指纹继续。可以在原代码下完成队列后单独重汇总；若选择从头运行，先停止旧队列、保留旧目录，再同步代码并使用新实验目录。若删除了包含`questions.jsonl`的目录，必须重新执行`prepare_bench_full.py`，不能直接运行runner。不要删除整个`runs`导致其他实验和有效来源丢失。
+这是新队列，第一次不加`--resume`。此后中断可对这个新base以相同参数加`--resume`继续。不要删除原runs。新版先后完成：
 
-三seed的成绩允许偶然相同、方差为0；代码不人为制造差异。截图仅是表格样式参考，所有数值均从当前实验预测重算。
+```text
+qwen_controller_seed42 → videojev_controller_seed42 → videojev_baseline_seed42 → native_seed42 → summary_seed42
+qwen_controller_seed43 → videojev_controller_seed43 → videojev_baseline_seed43 → native_seed43 → summary_seed43
+qwen_controller_seed44 → videojev_controller_seed44 → videojev_baseline_seed44 → native_seed44 → summary_seed44
+summary（最终六行、三seed、均值、样本方差）
+```
+
+单个seed汇总只有一个值，样本方差标为“—（单seed）”，不伪造为0。总表使用三个seed主指标计算ddof=1方差。单步Qwen、VideoJev和两版Controller每次只使用同seed的分数。OR始终是同seed的4FPS native Qwen与4FPS VideoJev采样答案，不采用2FPS融合来源。
+
+三seed的成绩允许偶然相同、方差为0；截图仅是表格样式参考，所有数值均从实验预测重算。

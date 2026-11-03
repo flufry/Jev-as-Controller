@@ -38,27 +38,35 @@ def make_plan(args):
     for flag,value in [('--max-memory-gib',args.max_memory_gib),('--max-memory-gib-per-gpu',args.max_memory_gib_per_gpu)]:
         if value is not None:qwen_args += [flag,str(value)]
     stages=[]
-    for role,kind,fps,cap in [('qwen_controller','qwen_logits',2,2048),('videojev_controller','videojev',2,2048),('videojev_baseline','videojev',4,4096)]:
-        qwen=kind=='qwen_logits';directory=base/'sources'/role
-        command=[qwen_python if qwen else videojev_python,str(ROOT/'scripts/eval_bench_full_source.py'),
-            '--kind',kind,*common,'--out',str(directory),'--checkpoint',str(Path(args.qwen_checkpoint if qwen else args.videojev_checkpoint).resolve()),
-            '--seed','42','--fps',str(fps),'--max-frames',str(cap),*(qwen_args if qwen else [])]
-        stages.append(dict(name=role,kind=kind,directory=str(directory),command=command,
-            cuda_visible_devices=','.join(devices) if qwen else str(args.videojev_gpu)))
     for seed in SEEDS:
-        directory=base/f'native/seed{seed}'
-        stages.append(dict(name=f'native_seed{seed}',kind='native',directory=str(directory),cuda_visible_devices=','.join(devices),
-            command=[qwen_python,str(ROOT/'scripts/eval_bench_full_source.py'),'--kind','native',*common,
-                '--out',str(directory),'--checkpoint',str(Path(args.qwen_checkpoint).resolve()),'--seed',str(seed),
-                '--fps','4','--max-frames','4096','--max-new-tokens',str(args.max_new_tokens),*qwen_args]))
+        for role,kind,fps,cap in [('qwen_controller','qwen_logits',2,2048),
+                ('videojev_controller','videojev',2,2048),('videojev_baseline','videojev',4,4096),
+                ('native','native',4,4096)]:
+            qwen=kind in ('qwen_logits','native')
+            directory=base/f'native/seed{seed}' if kind=='native' else base/f'sources/seed{seed}'/role
+            command=[qwen_python if qwen else videojev_python,str(ROOT/'scripts/eval_bench_full_source.py'),
+                '--kind',kind,*common,'--out',str(directory),
+                '--checkpoint',str(Path(args.qwen_checkpoint if qwen else args.videojev_checkpoint).resolve()),
+                '--seed',str(seed),'--fps',str(fps),'--max-frames',str(cap),*(qwen_args if qwen else [])]
+            if kind=='native':command+=['--max-new-tokens',str(args.max_new_tokens)]
+            stages.append(dict(name=f'{role}_seed{seed}',kind=kind,seed=seed,
+                source_role=f'native_seed{seed}' if kind=='native' else role,
+                directory=str(directory),command=command,
+                cuda_visible_devices=','.join(devices) if qwen else str(args.videojev_gpu)))
+        directory=base/f'per_seed/seed{seed}'
+        stages.append(dict(name=f'summary_seed{seed}',kind='cpu',seed=seed,directory=str(directory),cuda_visible_devices='',
+            command=[qwen_python,str(ROOT/'scripts/summarize_bench_full.py'),'--manifest',str(manifest),
+                '--base',str(base),'--out',str(directory),'--seed',str(seed)]))
     stages.append(dict(name='summary',kind='cpu',directory=str(base/'summary'),cuda_visible_devices='',
         command=[qwen_python,str(ROOT/'scripts/summarize_bench_full.py'),'--manifest',str(manifest),'--base',str(base),'--out',str(base/'summary')]))
     return stages
 
 
-def verify_summary(manifest, base, directory):
+def verify_summary(manifest, base, directory, seed=None):
     from scripts.summarize_bench_full import main
-    return main(['--manifest', str(manifest), '--base', str(base), '--out', str(directory), '--verify'])
+    argv=['--manifest', str(manifest), '--base', str(base), '--out', str(directory), '--verify']
+    if seed is not None:argv+=['--seed',str(seed)]
+    return main(argv)
 
 
 def parser():
@@ -92,7 +100,7 @@ def run(args):
     for stage in stages:
         if stage['kind']!='cpu':validate(source_parser().parse_args(stage['command'][2:]))
     hashes=code_files()
-    identity=dict(full_dataset=full,inference_seeds=list(SEEDS),selection_seed=None,stages=stages,code_sha256=hashes)
+    identity=dict(execution_protocol='four_gpu_runs_per_seed_v1',full_dataset=full,inference_seeds=list(SEEDS),selection_seed=None,stages=stages,code_sha256=hashes)
     if args.dry_run:
         result=dict(dry_run=True,gpu_started=False,output_created=False,identity=identity)
         print(json.dumps(result,ensure_ascii=False,indent=2));return result
@@ -105,7 +113,7 @@ def run(args):
         if any(Path(s['directory']).exists() for s in stages):raise FileExistsError('阶段输出已存在，拒绝覆盖或冒用')
         base.mkdir(parents=True,exist_ok=True)
         snapshot(base,hashes)
-        state=dict(schema='video_bench_full_queue_v1',identity=identity,status='running',started_at=now(),steps={},
+        state=dict(schema='video_bench_full_queue_v2',identity=identity,status='running',started_at=now(),steps={},
             git_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
             git_status=subprocess.check_output(['git','status','--short'],cwd=ROOT,text=True))
         save(state_path,state)
@@ -147,9 +155,9 @@ def run(args):
             if code:
                 step['status']='failed';raise RuntimeError(f'{stage["name"]}退出码{code}，已保留日志；不自动重试')
             if stage['kind']!='cpu':
-                read_source(directory,rows,full,stage['name'])
+                read_source(directory,rows,full,stage['source_role'],expected_seed=stage['seed'])
             else:
-                verify_summary(manifest,base,directory)
+                verify_summary(manifest,base,directory,stage.get('seed'))
             step.update(status='completed',files={str(p):sha256(p) for p in directory.rglob('*') if p.is_file()})
             step['files'].update({str(log):sha256(log),str(exit_path):sha256(exit_path)})
             save(state_path,state)

@@ -36,8 +36,8 @@ def validate(args):
     if args.kind=='native':
         if args.seed not in (42,43,44) or (args.fps,args.max_frames)!=(4.,4096):
             raise ValueError('全量native固定4FPS/4096，seed为42/43/44')
-    elif args.seed!=42 or (args.fps,args.max_frames) not in ((2.,2048),(4.,4096)):
-        raise ValueError('确定性来源仅执行seed42，帧率/上限必须匹配')
+    elif args.seed not in (42,43,44) or (args.fps,args.max_frames) not in ((2.,2048),(4.,4096)):
+        raise ValueError('来源必须独立执行对应seed42/43/44，帧率/上限必须匹配')
     if args.kind=='qwen_logits' and args.fps!=2.:
         raise ValueError('融合用Qwen来源固定2FPS/2048')
     if args.context<1024 or not 0<args.visual_token_budget<=args.context*4//5 or not 0<args.memory_fraction<=1:
@@ -64,6 +64,13 @@ def main(argv=None):
             checkpoint=str(Path(checkpoint).resolve()),settings=vars(args))
         print(json.dumps(result,ensure_ascii=False,indent=2))
         return result
+    # 每个来源均按所属seed独立初始化；native还会在内部逐题派生种子。
+    import random
+    import numpy as np
+    import torch
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     entry={'qwen_logits':'eval_longvideobench_qwen36.py','videojev':'eval_longvideobench_videojev.py',
            'native':'eval_bench_qwen36_native.py'}[args.kind]
     command=['--manifest',args.manifest,'--out',args.out,'--checkpoint',checkpoint,'--fps',str(args.fps),

@@ -116,9 +116,10 @@ def suite(prepared):
     checkpoint=lambda name:dict(path=f'/models/{name}',files={'config.json':{'sha256':'fixture'}})
     from scripts.videojev_candidate_logits import softmax
     from timejev.lvb_native_generation import extract_answer, generation_parameters
-    for role in ['qwen_controller','videojev_controller','videojev_baseline',*[f'native_seed{s}' for s in full.SEEDS]]:
+    for role,seed in [(role,seed) for seed in full.SEEDS for role in
+            ['qwen_controller','videojev_controller','videojev_baseline',f'native_seed{seed}']]:
         native=role.startswith('native');fps=4. if native or role=='videojev_baseline' else 2.
-        directory=base/(f'native/seed{role.removeprefix("native_seed")}' if native else f'sources/{role}')
+        directory=base/(f'native/seed{role.removeprefix("native_seed")}' if native else f'sources/seed{seed}/{role}')
         directory.mkdir(parents=True)
         protocol=dict(name='video_bench_full_rgb_v1',fps=fps,max_frames=4096 if fps==4 else 2048,
             context=262144,visual_token_budget=24576,use_audio=False,use_subtitles=False)
@@ -128,7 +129,7 @@ def suite(prepared):
             settings=dict(thinking=False,decoding=generation_parameters() if native else dict(do_sample=False,max_new_tokens=1)))
         if native:identity['settings'].update(presence_penalty=1.5,scoring='native_generation_then_option_parsing')
         if native:identity.update(full_dataset=metadata,inference_seed=int(role.removeprefix('native_seed')))
-        else:identity.update(seed=42);identity['settings']['full_dataset']=metadata
+        else:identity.update(seed=seed);identity['settings']['full_dataset']=metadata
         preds={}
         for i,row in enumerate(rows):
             pred=dict(row,preprocessing=audit(fps))
@@ -143,7 +144,7 @@ def suite(prepared):
                     invalid_reason=None if parsed['valid'] else parsed['reason'],answer=row['options'][choice] if choice is not None else None)
             else:
                 # 4FPS J与2FPS J故意不同，防止OR误用融合源。
-                values=[0.,0.,0.] if role=='videojev_baseline' else [1.,0.,.9] if role=='qwen_controller' else [-2.,8.,0.]
+                values=[0.,float(seed-42),0.] if role=='videojev_baseline' else [1.,0.,.9] if role=='qwen_controller' else [-2.,8.,0.]
                 probabilities=softmax(values);choice=max(range(3),key=values.__getitem__)
                 pred.update(answer_index=choice,answer=row['options'][choice],probabilities=probabilities)
                 if role=='qwen_controller':pred.update(candidate_logits=values,candidate_token_ids=[32,33,34])
@@ -161,10 +162,13 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
     result=full.summarize(manifest,base,out)
     assert set(result['methods'])==set(full.NAMES)
     assert result['selection_seed'] is None and result['inference_seeds']==[42,43,44]
-    assert result['schema']=='video_bench_full_three_seed_summary_v2'
+    assert result['schema']=='video_bench_full_three_seed_summary_v3'
     assert result['methods']['qwen_logits']['decoding']=='categorical_sampling_temperature_1'
     assert result['rng_methods']['qwen_logits']=='qwen36'
-    assert result['argmax_diagnostics']['qwen_logits']['correct']==len(rows)
+    assert all(r['correct']==len(rows) for r in result['argmax_diagnostics']['qwen_logits'])
+    assert result['candidate_gpu_passes']==9 and result['native_gpu_passes']==3
+    assert result['source_seeds']==[42,43,44]
+    assert len(result['sources'])==12
     assert result['primary_metric']=='m_avg'
     for seed in full.SEEDS:
         native={r['id']:r for r in full.read_jsonl(base/f'native/seed{seed}/predictions.jsonl')}
@@ -173,7 +177,7 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
         for p in oracle:
             assert (p['answer_index'] is not None)==(native[p['id']]['answer_index']==0 or jev[p['id']]['answer_index']==0)
         sampled_qwen=full.read_jsonl(out/f'qwen_logits.seed{seed}.predictions.jsonl')
-        source_qwen={r['id']:r for r in full.read_jsonl(base/'sources/qwen_controller/predictions.jsonl')}
+        source_qwen={r['id']:r for r in full.read_jsonl(base/f'sources/seed{seed}/qwen_controller/predictions.jsonl')}
         rng=random.Random(f'{seed}:qwen36')
         expected=[full.sample_index(source_qwen[r['id']]['probabilities'],rng) for r in rows]
         assert [r['answer_index'] for r in sampled_qwen]==expected
@@ -192,7 +196,7 @@ def test_summary_recomputes_sampling_or_and_variance(suite):
 @pytest.mark.parametrize('mutation',['missing','answer','protocol','seed','metric','source','checkpoint','audit','generation','code'])
 def test_summary_rejects_incomplete_or_mismatched_sources(suite,mutation):
     manifest,rows,_=suite;base=manifest.parent
-    directory=base/'sources/videojev_baseline'
+    directory=base/'sources/seed42/videojev_baseline'
     path=directory/'predictions.jsonl';values=full.read_jsonl(path)
     if mutation in ('missing','answer','audit'):
         if mutation=='missing':values.pop()
@@ -220,12 +224,15 @@ def test_plan_all_methods_and_no_sampling_seed_used_for_selection(prepared):
     args=runner.parser().parse_args(['--bench','mlvu','--base',str(manifest.parent),'--qwen-gpus','0,1,2,3',
         '--max-memory-gib-per-gpu','30,45,45,45','--dry-run'])
     stages=runner.make_plan(args)
-    assert len(stages)==7
-    assert [s['name'] for s in stages]==['qwen_controller','videojev_controller','videojev_baseline','native_seed42','native_seed43','native_seed44','summary']
-    for stage in stages[:3]:assert stage['command'][stage['command'].index('--seed')+1]=='42'
-    for stage in stages[3:6]:
-        assert stage['command'][stage['command'].index('--fps')+1]=='4'
+    assert len(stages)==16
+    assert [s['name'] for s in stages]==[f'{role}_seed{seed}' for seed in full.SEEDS for role in
+        ['qwen_controller','videojev_controller','videojev_baseline','native','summary']]+['summary']
+    for stage in stages[:-1]:
+        assert stage['command'][stage['command'].index('--seed')+1]==str(stage['seed'])
         assert '--sample-seed' not in stage['command']
+        if stage['kind']=='native':assert stage['command'][stage['command'].index('--fps')+1]=='4'
+        if stage['kind']=='qwen_logits':assert stage['command'][stage['command'].index('--max-frames')+1]=='2048'
+    assert len({s['directory'] for s in stages})==16
     runner.run(args)
     assert not (manifest.parent/'experiment.json').exists()
     assert not (manifest.parent/'sources').exists()
@@ -347,19 +354,19 @@ def test_runner_records_failure_resumes_and_checks_completed_hashes(prepared,mon
             return 0
     monkeypatch.setattr(runner.subprocess,'Popen',Process)
     monkeypatch.setattr(runner.subprocess,'check_output',lambda *a,**kw:'fixture')
-    monkeypatch.setattr(runner,'read_source',lambda *a:None)
+    monkeypatch.setattr(runner,'read_source',lambda *a,**kw:None)
     monkeypatch.setattr(runner,'verify_summary',lambda *a:None)
     with pytest.raises(RuntimeError,match='退出码7'):runner.run(args)
     state=full.read_json(base/'experiment.json')
     assert state['status']=='failed'
-    assert state['steps']['qwen_controller']['status']=='completed'
-    assert (base/'logs/videojev_controller.attempt1.exitcode').read_text().strip()=='7'
+    assert state['steps']['qwen_controller_seed42']['status']=='completed'
+    assert (base/'logs/videojev_controller_seed42.attempt1.exitcode').read_text().strip()=='7'
     args.resume=True
     runner.run(args)
-    assert len(calls)==8  # 7 stages plus the failed attempt; completed source not rerun.
+    assert len(calls)==17  # 16 stages plus the failed attempt; completed source not rerun.
     assert '--resume' in calls[2]
     assert full.read_json(base/'experiment.json')['status']=='completed'
-    (base/'sources/qwen_controller/metrics.json').write_text('tampered')
+    (base/'sources/seed42/qwen_controller/metrics.json').write_text('tampered')
     with pytest.raises(ValueError,match='SHA'):runner.run(args)
 
 
@@ -389,7 +396,7 @@ def test_runner_preserves_virtualenv_interpreter_symlink(tmp_path, monkeypatch, 
 def test_six_row_table_layout_and_mlvu_label():
     methods={name:dict(mean=.6+i*.01,values=[.6+i*.01]*3,
         sample_variance_percentage_points_squared=0.,trials=[]) for i,name in enumerate(full.NAMES)}
-    report=dict(benchmark='longvideobench',n=1337,primary_metric='accuracy',methods=methods,
+    report=dict(benchmark='longvideobench',inference_seeds=[42,43,44],n=1337,primary_metric='accuracy',methods=methods,
         note='fixture',rng='fixture',argmax_diagnostics={})
     text=full.markdown(report)
     table=text.split('\n\n')[2].splitlines()
@@ -402,3 +409,44 @@ def test_six_row_table_layout_and_mlvu_label():
     assert '标准差' not in table[0]
     report.update(benchmark='mlvu',primary_metric='m_avg')
     assert '平均 M-Avg' in full.markdown(report)
+
+
+def test_per_seed_summary_uses_only_its_four_runs(suite):
+    manifest,rows,_=suite;base=manifest.parent
+    result=full.summarize(manifest,base,seeds=(43,))
+    assert result['inference_seeds']==[43] and len(result['sources'])==4
+    assert result['candidate_gpu_passes']==3 and result['native_gpu_passes']==1
+    assert all(name.endswith('_seed43') for name in result['sources'])
+    assert all(s['sample_variance_percentage_points_squared'] is None for s in result['methods'].values())
+    assert '—（单seed）' in full.markdown(result)
+    all_seeds=full.summarize(manifest,base)
+    for method in result['methods']:
+        assert result['methods'][method]['trials'][0]==all_seeds['methods'][method]['trials'][1]
+    # seed43的结果改变不应影响seed42或44；其中一个seed来源无效应直接拒绝。
+    p=base/'sources/seed43/qwen_controller/run.json'
+    run=full.read_json(p);run['identity']['seed']=42;p.write_bytes(json_bytes(run))
+    with pytest.raises(ValueError,match='seed'):full.summarize(manifest,base,seeds=(43,))
+    assert full.summarize(manifest,base,seeds=(42,))['inference_seeds']==[42]
+
+
+def test_each_seed_samples_its_own_videojev_distribution(suite):
+    manifest,rows,_=suite;base=manifest.parent;out=base/'summary'
+    full.summarize(manifest,base,out)
+    seen=[]
+    for seed in full.SEEDS:
+        source=full.read_jsonl(base/f'sources/seed{seed}/videojev_baseline/predictions.jsonl')
+        probs={p['id']:p['probabilities'] for p in source}
+        actual=full.read_jsonl(out/f'videojev.seed{seed}.predictions.jsonl')
+        rng=random.Random(f'{seed}:videojev')
+        assert [p['answer_index'] for p in actual]==[full.sample_index(probs[r['id']],rng) for r in rows]
+        assert all(p['probabilities']==probs[p['id']] for p in actual)
+        seen.append(actual[0]['probabilities'])
+    assert seen[0]!=seen[1]!=seen[2]
+
+
+@pytest.mark.parametrize('kind',['qwen_logits','videojev'])
+@pytest.mark.parametrize('seed',[42,43,44])
+def test_source_entry_accepts_independent_seed_runs(kind,seed):
+    from scripts.eval_bench_full_source import parser,validate
+    args=parser().parse_args(['--kind',kind,'--manifest','manifest','--out','out','--fps','2','--max-frames','2048','--seed',str(seed)])
+    validate(args)
