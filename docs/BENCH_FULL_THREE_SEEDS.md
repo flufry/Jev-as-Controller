@@ -28,7 +28,7 @@
 
 native沿用关闭thinking的原设置：temperature=.7、top_p=.8、top_k=20、min_p=0、presence_penalty=1.5、repetition_penalty=1，默认最多32768个输出token。每题使用`SHA256(f'{seed}:{question_id}')`派生torch CPU/CUDA种子。无效、歧义、截断均计错，保留在分母中。
 
-默认context=262144、visual-token-budget=24576、不使用字幕/音频。首次全量候选分数仍需覆盖全部问题和完整视频问题组，不拼接旧子集分数。GPU阶段为Qwen logits 2FPS一次、VideoJev 2FPS一次、VideoJev 4FPS一次、native三次，共**6个GPU阶段**。每完成一个native seed即生成该seed的CPU汇总，最后生成总表（共10个队列阶段，其中4个是CPU）。
+默认context=262144、visual-token-budget=24576、不使用字幕/音频。首次全量候选分数仍需覆盖全部问题和完整视频问题组，不拼接旧子集分数。GPU阶段为Qwen logits 2FPS一次、VideoJev 2FPS一次、VideoJev 4FPS一次、native三次，共**6个GPU阶段**。默认顺序为**Qwen logits → native42 → native43 → native44 → VideoJev 2FPS → VideoJev 4FPS → 三份单seed汇总 → 总表**（共10个队列阶段，其中4个是CPU）。由于单seed表需要VideoJev来源，所有CPU汇总都在模型阶段结束后执行。
 
 原始候选来源的seed固定为42，最终报告的seed42/43/44是答案采样seed。其差异不依赖重新执行确定性GPU前向。单步Qwen的argmax与采样成绩分别保存。
 
@@ -152,6 +152,7 @@ runs/full/<benchmark>/
   questions.jsonl / questions.meta.json
   experiment.json                 # 阶段状态、真实退出码、命令和源码指纹
   source/                         # 本次封存源码
+  input_hash_cache.json            # 默认首次校验的视频及两套模型指纹，后续阶段/恢复共用
   logs/<stage>.attemptN.log
   logs/<stage>.attemptN.exitcode
   sources/qwen_controller/        # 一次2FPS Qwen首步前向，来源seed42
@@ -160,7 +161,7 @@ runs/full/<benchmark>/
   native/seed42/                  # 实际完整自回归生成
   native/seed43/
   native/seed44/
-  per_seed/seed42/results.md       # 共享来源+本seed native就绪后生成六方法表
+  per_seed/seed42/results.md       # 两模型全部完成后生成该seed六方法表
   per_seed/seed43/results.md
   per_seed/seed44/results.md
   summary/results.md             # 六行六列：方法、三seed、均值、样本方差
@@ -201,7 +202,7 @@ python scripts/summarize_bench_full.py \
 
 ## 旧运行的安全复用与迁移
 
-当前队列schema为`video_bench_full_queue_v3`，执行协议为`shared_candidate_sources_three_sampling_seeds_v1`，总表schema为`video_bench_full_three_seed_summary_v4`。旧队列的`experiment.json`不能直接用新代码`--resume`；不要修改其中的源码SHA或状态绕过校验。停止旧队列再同步代码，旧目录保留。
+当前队列schema为`video_bench_full_queue_v4`，执行协议为`shared_candidate_sources_three_sampling_seeds_v1`，总表schema为`video_bench_full_three_seed_summary_v4`。旧队列的`experiment.json`不能直接用新代码`--resume`；不要修改其中的源码SHA或状态绕过校验。停止旧队列再同步代码，旧目录保留。
 
 ### 三份候选来源均已完整完成，native尚未完成
 
@@ -239,11 +240,130 @@ python scripts/summarize_bench_full.py \
 ### 新队列阶段顺序
 
 ```text
-qwen_controller → videojev_controller → videojev_baseline
-native_seed42 → summary_seed42
-native_seed43 → summary_seed43
-native_seed44 → summary_seed44
+首次输入内容哈希（原视频+两套模型）
+qwen_controller → native_seed42 → native_seed43 → native_seed44
+videojev_controller → videojev_baseline
+summary_seed42 → summary_seed43 → summary_seed44
 summary（最终六行、三seed、均值、样本方差）
 ```
 
 复用来源时前三个阶段标记为`reused`，其余完成阶段标记为`completed`。单个seed的样本方差标为“—（单seed）”；总表用三个seed主指标计算ddof=1方差。三seed的成绩允许偶然相同；截图仅作表格样式参考，所有数值均由实际预测重算。
+
+## 旧版本辅助入口：恢复时显式复用输入哈希
+
+下面两个helper主要用于尚未接入实验级缓存的旧冻结队列。新版runner默认使用下一节的一次哈希缓存，无需手动调用这些helper。
+
+当已确认视频和权重没有变化，且不想在失败重试时再次完整读取大文件，可使用独立入口`resume_bench_fast.py`。它仍调用原`run_bench_full.py`，保留队列源码、设置、完整清单和预测校验；仅对存在`run.json`的恢复模型子进程复用历史视频/权重SHA256。新模型阶段没有历史记录时仍正常计算全部输入哈希。
+
+```bash
+/opt/jev/bin/python scripts/resume_bench_fast.py \
+  --bench videomme \
+  --manifest runs/full/videomme/questions.jsonl \
+  --base runs/full/videomme_latest_aligned_restart \
+  --qwen-gpus 0,1,2,3,4,5 --videojev-gpu 7 \
+  --qwen-python /opt/jev/bin/python --videojev-python /opt/jev/bin/python \
+  --resume
+```
+
+除入口名称外，必须使用原队列的全部参数。该入口不允许首次运行，不能绕过源码/参数不一致，也不消除模型加载和实际视频解码所需的读取。
+
+- 视频：检查存在、路径、字节大小及`mtime_ns`，随后复用已记录SHA256。
+- `.safetensors`：检查存在、路径和字节大小；旧记录有mtime时也检查。当前历史checkpoint记录通常不含mtime，因此不能识别同大小的权重内容变更。
+- 小配置、tokenizer、源码、官方标注、清单和预测文件：沿用原校验，不复用其内容hash。
+- 若文件大小或已记录的mtime变化，则拒绝快速恢复；应使用原runner执行完整校验，不要手动改记录。
+
+**这不是完整内容一致性验证。**同大小且保留mtime的内容变化可能漏检，用户需明确确认输入未修改。脚本在模型目录新增`input_hash_reuse.jsonl`记录helper源码SHA、先前run.json SHA及本次检查强度，不改写历史identity。日志会打印`input_hash_reuse`事件。
+
+对正在使用冻结源码的旧实验，只上传新增的`scripts/resume_bench_fast.py`即可；不要为这个功能更新已纳入原队列指纹的文件。它也不会修复其他既有源码差异。缺少run.json时没有可复用的已完成哈希，仍需首次初始化。
+
+## 已有队列先执行 Qwen native
+
+若Qwen logits已完成、希望优先使用空闲的多张GPU完成native，可只上传新增`scripts/run_bench_native_first.py`，不修改冻结评测源码。先停止原runner并确认其子进程退出，进入容器tmux执行：
+
+```bash
+/opt/jev/bin/python scripts/run_bench_native_first.py \
+  --base runs/full/videomme_latest_aligned_restart --dry-run
+/opt/jev/bin/python scripts/run_bench_native_first.py \
+  --base runs/full/videomme_latest_aligned_restart
+```
+
+它读取原experiment.json中的native三组原命令、设备及seed，不重新运行Qwen logits、不运行VideoJev。每次原模型进程成功退出并核验完整结果后，才记录该阶段completed。三个native完成后整体状态为awaiting_remaining_stages，不宣称整个实验完成。仍会执行各native阶段原有的输入哈希和模型加载。
+
+之后在VideoJev所需单卡可用时，用原run_bench_full.py、原参数和--resume继续；完成的native会核验后跳过，VideoJev及CPU汇总继续执行。原identity和已完成其他阶段记录不变，新增入口仅改变实际执行顺序；日志路径仍为logs/native_seedXX.attemptN.log。若该入口中断，重新执行同一命令会按已有run.json恢复native。不能与原runner同时运行；Linux下会检查同一base的活动runner/模型进程并拒绝并发。
+
+### 三个native都复用已完成Qwen来源的输入哈希
+
+已确认输入未变化时，可显式指定原Qwen来源的run.json：
+
+```bash
+/opt/jev/bin/python scripts/run_bench_native_first.py \
+  --base runs/full/videomme_latest_aligned_restart \
+  --trust-input-hashes-from runs/full/videomme_latest_aligned_restart/sources/qwen_controller/run.json
+```
+
+需同步更新两个独立helper：`scripts/run_bench_native_first.py`和`scripts/resume_bench_fast.py`。它们未加入冻结评测源码列表，不需要修改原identity；停止旧进程后再替换helper。此模式覆盖第一次启动的seed和中断恢复的seed，三次都复用所指定来源的视频、safetensors哈希。source run.json SHA会固定并逐次核验，题集SHA、视频集合及路径、checkpoint文件库存、小配置内容仍核验，旧来源不会被改写。
+
+这是显式信任旧内容哈希，不是完整内容校验：视频仅检查路径、大小和mtime；历史权重没有mtime时仅检查路径和大小。同大小内容修改可能漏检。每次运行单独保存`input_hash_reuse.jsonl`并在队列attempt中标明来源和策略。模型仍须各加载三遍，首次视频实际解码仍须读取文件。缺少完整旧输入指纹时不能用此模式。完成后原runner照常--resume继续VideoJev及汇总。
+
+## 后续实验可选：Qwen与VideoJev不同GPU并行
+
+仅在新实验启动时添加`--parallel-models`。默认串行不变；不要为了使用本功能更新正在运行的Video-MME源码，等该实验结束后再同步。
+
+```bash
+/opt/jev/bin/python scripts/run_bench_full.py --bench mlvu \
+  --manifest runs/full/mlvu/questions.jsonl \
+  --base runs/full/mlvu_parallel \
+  --qwen-gpus 0,1,2,3,4,5 --videojev-gpu 7 \
+  --qwen-python /opt/jev/bin/python --videojev-python /opt/jev/bin/python \
+  --parallel-models --dry-run
+```
+
+计划确认后去掉`--dry-run`。LongVideoBench/LVBench等使用同一选项，替换`--bench`、清单及输出目录。恢复保留全部参数（包括`--parallel-models`）再加`--resume`。
+
+```text
+Qwen通道：Qwen logits 2FPS → native42 → native43 → native44
+VideoJev通道：VideoJev 2FPS → VideoJev 4FPS
+两个通道全部完成 → seed42/43/44 CPU汇总 → 最终总表
+```
+
+最多同时存在一个Qwen模型进程和一个VideoJev模型进程。VideoJev卡不得属于Qwen卡列表（例如默认VideoJev GPU0与Qwen0..5重叠会被拒绝）。**只启动这一份runner，不额外启动native-first或另一份原队列**。CPU汇总推迟到全部模型阶段结束，避免读取尚未完成的来源。
+
+此选项仅改变调度顺序，不改变checkpoint、帧率/帧数、seed、采样或融合公式。不同GPU仍共享CPU、RAM和磁盘带宽，并行不保证总时间一定更短，也不自动预留或检测他人GPU占用。新实验默认在主进程先完成一次输入哈希缓存，再启动两通道，子进程只复用视频/权重SHA；不会由两通道并发重复建立缓存。
+
+所有状态仅由主调度进程写入：`experiment.json`增加`active_stages`列表，同时运行两阶段时旧`active_stage`字段为null，**此时不代表空闲**。可用下面命令在宿主机查看（替换数据集目录）：
+
+```bash
+docker exec jev-bench-full /opt/jev/bin/python -c '
+import json
+from pathlib import Path
+s=json.loads(Path("/workspace/Jev-as-Controller/runs/full/mlvu_parallel/experiment.json").read_text())
+print("整体:",s["status"],"活动阶段:",s.get("active_stages",[]))
+for name in s.get("active_stages",[]):
+    a=s["steps"][name]["attempts"][-1]
+    print(name,"PID:",a.get("pid"),"日志:",a["log"])
+'
+```
+
+每个阶段保持独立`attemptN.log`和真实退出码。一个通道失败/校验失败或按Ctrl+C时，调度器只终止自己启动的另一通道子进程，保留两边的完整预测供恢复；不会杀服务器其他用户任务，不自动重试。源码、参数、来源和已完成产物的指纹保护保持不变。
+
+## 新版默认：Qwen优先，一次输入哈希
+
+不加额外参数即可使用新默认。它不改变帧率、帧数、模型、采样或融合方法，只改变队列顺序和输入校验成本。
+
+- 首次启动：在第一个模型加载前，对本实验全部原视频及Qwen/VideoJev两套checkpoint文件计算SHA256，写入`BASE/input_hash_cache.json`。每个唯一文件只计算一次（同视频多题不重复）。控制台输出`hash_input_start`、文件名及完成数；整个阶段状态为`checking_input_hash_cache`。
+- 后续阶段与`--resume`：复用该缓存中的视频、`.safetensors`哈希，仅检查路径、库存、大小、纳秒级修改时间。两套权重都记录mtime，避免旧helper中缺少权重mtime的限制。缓存文件自身仍核对SHA。
+- 模型JSON配置、tokenizer/处理器文件、源码、清单、官方标注、预测和产物指纹仍按原有规则校验。模型加载和视频解码仍须实际读取数据，不会跳过。
+- 首次哈希中断：已完成文件逐个原子持久化，`--resume`时只计算剩余文件；文件发生变化则拒绝复用。
+- 每个模型阶段写入`input_hash_cache_use.jsonl`，记录缓存路径、SHA和实际复用数量。队列attempt记录实际包装命令和原模型命令`model_command`。GPU模型入口的`sys.argv`和原预测身份保持一致。
+
+**“一次校验”只针对视频/权重等大输入，不是关闭所有校验。**大小和mtime匹配不能保证内容完全未变；同大小且保留mtime的修改可能漏检。默认策略以用户保证输入不变为前提。缓存较小，存储的是文件指纹而非模型/视频副本。
+
+如果需要每个模型阶段完整重算内容哈希，新实验启动时加：
+
+```bash
+--input-hash-mode always
+```
+
+默认值是`--input-hash-mode once`。模式写入队列身份，恢复不得更换；缓存缺失或变化也不会静默重建。输入/源码或校验模式改变，请选择新实验目录，不改写旧experiment.json。
+
+新版改变了队列源码和调度身份，**不要中途更新正在运行的旧Video-MME，也不要直接用旧base尝试新版resume**。当前运行继续使用冻结旧代码；等旧实验完成后同步，用新base启动后续benchmark。若旧来源已完成，可按前文显式复用；新队列仍建立自己的输入缓存。

@@ -93,5 +93,20 @@ def test_shared_geometry_timeline_and_context():
     assert 'labels' not in inputs and 'answer_index' not in inputs
     with pytest.raises(ValueError, match='上下文'):
         text_inputs(Processor(), row, record, 4)
+
+
+def test_optional_native_prompt_omits_only_final_letter_instruction():
+    class PromptCapture(Processor):
+        def apply_chat_template(self, messages, **kwargs):
+            self.prompt = messages[0]['content'][1]['text']
+            assert kwargs == dict(tokenize=False, add_generation_prompt=True, enable_thinking=False)
+            assert messages[0]['content'][0] == dict(type='video', video='provided_in_memory')
+            return '<video>Question'
+
+    row = dict(query='Question?', options=['A. Yes', 'B. No'], answer_index=1)
+    record = dict(frames=3, effective_fps=.5, grid_thw=[2, 2, 2], tokens=2)
+    processor = PromptCapture()
+    text_inputs(processor, row, record, 8, answer_instruction='')
+    assert processor.prompt == 'Question?\nA. Yes\nB. No'
     with pytest.raises(ValueError, match='占位'):
         text_inputs(Processor(), row, dict(record, tokens=3), 5)

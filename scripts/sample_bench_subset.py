@@ -38,7 +38,8 @@ def validate_population(bench, rows):
         raise ValueError('Sampling source must be the complete validated official population')
 
 
-def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportional=False):
+def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportional=False,
+           allow_incomplete_population=False):
     manifest = Path(manifest or f'data/benchmarks/{bench}/questions.jsonl').resolve()
     out = Path(out).resolve()
     if out.exists() or out.with_suffix('.meta.json').exists():
@@ -47,7 +48,27 @@ def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportion
     rows = load_rows(manifest)
     if any(r.get('benchmark') != bench for r in rows):
         raise ValueError('Manifest benchmark does not match --bench')
-    validate_population(bench, rows)
+    source_meta = manifest.with_suffix('.meta.json')
+    source_metadata = json.loads(source_meta.read_text(encoding='utf-8')) if source_meta.exists() else {}
+    coverage = source_metadata.get('coverage', {})
+    if allow_incomplete_population:
+        excluded = [qid for video in coverage.get('excluded_videos', []) for qid in video['question_ids']]
+        if (bench != 'lvbench' or source_metadata.get('schema') != 'bench_manifest_v1'
+                or source_metadata.get('manifest_sha256') != source_sha
+                or coverage.get('scope') != 'available_videos_subset'
+                or coverage.get('official_full_benchmark') is not False
+                or coverage.get('expected_questions') != 1549
+                or coverage.get('available_questions') != len(rows)
+                or coverage.get('available_videos') != len({r['video_key'] for r in rows})
+                or coverage.get('excluded_questions') != len(excluded)
+                or len(set(excluded)) != len(excluded)
+                or set(excluded) & {r['id'] for r in rows}
+                or len(rows) + len(excluded) != 1549):
+            raise ValueError('Incomplete sampling requires an audited LVBench available-video manifest')
+    else:
+        if coverage.get('scope') == 'available_videos_subset':
+            raise ValueError('Available-video population requires explicit --allow-incomplete-population')
+        validate_population(bench, rows)
     groups = sorted({stratum(r) for r in rows})
     counts = {g: sum(stratum(r) == g for r in rows) for g in groups}
     if bench == 'mlvu':
@@ -85,9 +106,11 @@ def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportion
         tie_break_order=groups, selected_ids=[r['id'] for r in chosen],
         sample_sha256=hashlib.sha256(data).hexdigest(), sampler_sha256=sha256(__file__),
         videos=len({r['video_key'] for r in chosen}), training_overlap_verified=False)
-    source_meta = manifest.with_suffix('.meta.json')
-    if source_meta.exists():
-        meta['source_metadata'] = json.loads(source_meta.read_text(encoding='utf-8'))
+    if source_metadata:
+        meta['source_metadata'] = source_metadata
+    if allow_incomplete_population:
+        meta['population_scope'] = 'available_videos_subset'
+        meta['official_full_benchmark'] = False
     if sha256(manifest) != source_sha:
         raise ValueError('Source manifest changed during sampling')
     write_new(out, data)
@@ -104,6 +127,8 @@ def main():
     parser.add_argument('--n', type=int)
     parser.add_argument('--per-task', type=int)
     parser.add_argument('--proportional', action='store_true', help='LVBench default; explicit for plan compatibility')
+    parser.add_argument('--allow-incomplete-population', action='store_true',
+                        help='LVBench only: sample an audited available-video subset instead of the full official population')
     print(json.dumps(sample(**vars(parser.parse_args())), ensure_ascii=False, indent=2))
 
 

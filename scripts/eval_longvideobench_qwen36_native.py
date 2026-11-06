@@ -29,6 +29,8 @@ def main(argv=None):
     parser.add_argument('--gpu-count', type=int, choices=(4, 5, 6), default=6)
     parser.add_argument('--max-memory-gib', type=float, default=18.5)
     parser.add_argument('--max-new-tokens', type=int, default=32768)
+    parser.add_argument('--omit-letter-only-instruction', action='store_true',
+                        help='从prompt中移除末尾“只回答正确选项字母”的约束句')
     parser.add_argument('--limit', type=int, help='仅用于独立smoke目录；记录截取的题目ID')
     parser.add_argument('--dry-run', action='store_true', help='仅CPU校验输入/本地配置，不加载或hash权重，不创建输出')
     args = parser.parse_args(argv)
@@ -52,7 +54,10 @@ def main(argv=None):
             raise ValueError(f'缺少权重分片：{name}')
     config = AutoConfig.from_pretrained(args.checkpoint, local_files_only=True)
     plan = device_plan(config, args.gpu_count)
-    settings = dict(prompt=ANSWER_INSTRUCTION, thinking=False, scoring='native_generation_then_option_parsing',
+    answer_instruction = '' if args.omit_letter_only_instruction else ANSWER_INSTRUCTION
+    settings = dict(prompt=answer_instruction, thinking=False,
+        omit_letter_only_instruction=args.omit_letter_only_instruction,
+        scoring='native_generation_then_option_parsing',
         decoding=parameters, presence_penalty=1.5, presence_penalty_scope='generated_tokens_only_unique',
         presence_penalty_order='before_temperature_top_k_top_p', seed_rule=SEED_RULE,
         sample=sample, gpu_count=args.gpu_count, max_memory_gib=args.max_memory_gib, device_map=plan,
@@ -90,7 +95,7 @@ def main(argv=None):
         pixels = torch.cat(preprocess(processor, record))
         preprocessing_seconds = time.perf_counter()-started
         for row in members:
-            inputs = text_inputs(processor, row, record, args.context)
+            inputs = text_inputs(processor, row, record, args.context, answer_instruction)
             input_tokens = inputs['input_ids'].shape[-1]
             if input_tokens+args.max_new_tokens > args.context:
                 raise ValueError(f'完整输入及输出上限超出context，拒绝截断：{row["id"]}')

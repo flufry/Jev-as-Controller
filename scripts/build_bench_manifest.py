@@ -69,12 +69,16 @@ def mlvu_reference(path):
     return rows, files
 
 
-def adapt(bench, reference, video_root, video_map=None):
+def adapt(bench, reference, video_root, video_map=None, *, missing_videos=None):
     """Only question content determines strata; labels never affect selection."""
     video_root, video_map = Path(video_root).resolve(), video_map or {}
 
     def path_for(key, filename):
         path = (video_root / video_map.get(key, filename)).resolve()
+        if not path.is_relative_to(video_root):
+            raise ValueError(f'Video path outside video root: {path}')
+        if missing_videos is not None and (not path.is_file() or path.stat().st_size == 0):
+            return None
         if not path.is_relative_to(video_root) or not path.is_file():
             raise ValueError(f'Missing video or path outside video root: {path}')
         return str(path)
@@ -98,11 +102,17 @@ def adapt(bench, reference, video_root, video_map=None):
     else:
         validate_lvbench(reference)
         for video in reference:
+            path = path_for(video['key'], video['key'] + '.mp4')
+            if path is None:
+                missing_videos.append(dict(video_key='lvbench/' + video['key'], path=str(
+                    (video_root / video_map.get(video['key'], video['key'] + '.mp4')).resolve()),
+                    reason='missing_or_empty', question_ids=['lvbench/' + str(q['uid']) for q in video['qa']]))
+                continue
             for qa in video['qa']:
                 query, options, answer = parse_choice(qa['question'], qa['answer'])
                 uid = str(qa['uid'])
                 rows.append(dict(id='lvbench/' + uid, uid=uid, question_id=uid,
-                    video_key='lvbench/' + video['key'], video_path=path_for(video['key'], video['key'] + '.mp4'),
+                    video_key='lvbench/' + video['key'], video_path=path,
                     query=query, options=options, answer_index=answer, question_type=qa['question_type'],
                     stratum=json.dumps(sorted(qa['question_type']), ensure_ascii=False, separators=(',', ':'))))
     for row in rows:
@@ -110,7 +120,10 @@ def adapt(bench, reference, video_root, video_map=None):
     return rows
 
 
-def build(bench, base, annotation=None, videos=None, out=None, video_map=None, probe=None):
+def build(bench, base, annotation=None, videos=None, out=None, video_map=None, probe=None,
+          allow_missing_videos=False):
+    if allow_missing_videos and bench != 'lvbench':
+        raise ValueError('--allow-missing-videos is only supported for LVBench')
     base = Path(base).resolve()
     annotation = Path(annotation or base / ('official.jsonl' if bench == 'lvbench' else 'official.json')).resolve()
     out = Path(out or base / 'questions.jsonl').resolve()
@@ -125,7 +138,10 @@ def build(bench, base, annotation=None, videos=None, out=None, video_map=None, p
     if video_map:
         files.append(Path(video_map).resolve())
     before = {str(p): sha256(p) for p in files}
-    rows = adapt(bench, reference, videos or base / 'videos', mapping)
+    missing = [] if allow_missing_videos else None
+    rows = adapt(bench, reference, videos or base / 'videos', mapping, missing_videos=missing)
+    if not rows:
+        raise ValueError('No available questions; no manifest written')
     if probe is None:
         from timejev.rgb_media import probe_video_geometry
         probe = probe_video_geometry
@@ -146,6 +162,13 @@ def build(bench, base, annotation=None, videos=None, out=None, video_map=None, p
         sources=before, manifest_sha256=hashlib.sha256(data).hexdigest(),
         strata=dict(Counter(r['stratum'] for r in rows)), duration_source='decoded_video_probe',
         training_overlap_verified=False, builder_sha256=sha256(__file__))
+    if allow_missing_videos:
+        meta['coverage'] = dict(scope='available_videos_subset', official_full_benchmark=False,
+            expected_questions=1549, expected_videos=len(reference),
+            available_questions=len(rows), available_videos=len(cache),
+            excluded_questions=sum(len(v['question_ids']) for v in missing),
+            excluded_videos=missing, question_coverage=len(rows) / 1549,
+            exclusion_policy='exclude_all_questions_of_missing_or_empty_video')
     write_new(out, data)
     load_rows(out, verify_meta=False)
     write_new(meta_path, json_bytes(meta))
@@ -160,6 +183,8 @@ def main():
     parser.add_argument('--videos', help='Root of decoded video files')
     parser.add_argument('--video-map', help='JSON: official video ID/MLVU video field -> path relative to --videos')
     parser.add_argument('--out')
+    parser.add_argument('--allow-missing-videos', action='store_true',
+                        help='LVBench only: explicitly build an available-video subset and record exclusions in metadata')
     print(json.dumps(build(**vars(parser.parse_args())), ensure_ascii=False, indent=2))
 
 

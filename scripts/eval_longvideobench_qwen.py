@@ -38,12 +38,14 @@ def candidate_scores(first_logits, token_ids):
     return selected.tolist(), selected.softmax(dim=-1).tolist()
 
 
-def text_inputs(processor, row, record, context):
+def text_inputs(processor, row, record, context, answer_instruction=ANSWER_INSTRUCTION):
     """保留共享采样时间线及几何，不调用原生视频重采样。"""
     import numpy as np
     from transformers.video_utils import VideoMetadata
 
-    prompt = row['query'] + '\n' + '\n'.join(row['options']) + '\n' + ANSWER_INSTRUCTION
+    prompt = row['query'] + '\n' + '\n'.join(row['options'])
+    if answer_instruction:
+        prompt += '\n' + answer_instruction
     text = processor.apply_chat_template([
         {'role': 'user', 'content': [
             {'type': 'video', 'video': 'provided_in_memory'},

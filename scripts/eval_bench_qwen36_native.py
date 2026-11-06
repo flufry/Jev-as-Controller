@@ -34,6 +34,8 @@ def main(argv=None):
     parser.add_argument('--max-memory-gib-per-gpu',
         help='按逻辑 GPU 0..N-1 指定预算，例如 40,20,40,40；使用时不要同时指定 --max-memory-gib')
     parser.add_argument('--max-new-tokens', type=int, default=32768)
+    parser.add_argument('--omit-letter-only-instruction', action='store_true',
+                        help='从prompt中移除末尾“只回答正确选项字母”的约束句')
     parser.add_argument('--limit', type=int, help='仅用于独立 smoke 输出目录')
     args = parser.parse_args(argv)
     scalar_budget = 18.5 if args.max_memory_gib is None else args.max_memory_gib
@@ -70,7 +72,9 @@ def main(argv=None):
 
     config = AutoConfig.from_pretrained(args.checkpoint, local_files_only=True)
     plan = device_plan(config, args.gpu_count)
-    settings = dict(prompt=ANSWER_INSTRUCTION, thinking=False,
+    answer_instruction = '' if args.omit_letter_only_instruction else ANSWER_INSTRUCTION
+    settings = dict(prompt=answer_instruction, thinking=False,
+        omit_letter_only_instruction=args.omit_letter_only_instruction,
         scoring='native_generation_then_option_parsing', decoding=parameters,
         presence_penalty=1.5, presence_penalty_scope='generated_tokens_only_unique',
         presence_penalty_order='before_temperature_top_k_top_p', seed_rule=SEED_RULE,
@@ -111,7 +115,7 @@ def main(argv=None):
         pixels = torch.cat(preprocess(processor, record))
         preprocessing_seconds = time.perf_counter()-started
         for row in members:
-            inputs = text_inputs(processor, row, record, args.context)
+            inputs = text_inputs(processor, row, record, args.context, answer_instruction)
             input_tokens = inputs['input_ids'].shape[-1]
             if input_tokens+parameters['max_new_tokens'] > args.context:
                 raise ValueError(f'完整输入及输出上限超出 context，拒绝截断：{row["id"]}')

@@ -202,6 +202,35 @@ data/benchmarks/
 
 如果 data 挂载与前面的示例一致，上述目录在宿主机就是 `/public/hyj/jev/data/benchmarks`。可重复运行；已解压且大小一致的 Video-MME 视频会跳过，不删除 ZIP、缓存或原始视频。缺失视频、冲突标注或损坏 ZIP 会报错，不把不完整数据标记为完成。整理成功后仍需下一节构建清单，检查视频几何信息与时长。
 
+### LVBench 部分视频无法获取时
+
+默认构建命令要求全部 1549 道官方题对应的视频存在。若视频已下架且无法补齐，可显式构建“可用视频子集”。原始完整标注不删改；不能将子集准确率称为官方全量准确率。先将以下两个脚本同步到服务器：`scripts/build_bench_manifest.py`、`scripts/sample_bench_subset.py`。
+
+在容器仓库根目录执行，输出路径必须未被使用：
+
+```bash
+python scripts/build_bench_manifest.py --bench lvbench \
+  --base data/benchmarks/lvbench \
+  --annotation data/benchmarks/lvbench/video_info.meta.jsonl \
+  --out data/benchmarks/lvbench/questions.available.jsonl \
+  --allow-missing-videos
+```
+
+`questions.available.meta.json` 的 `coverage` 记录可用视频数、可用题数、相对 1549 题的覆盖率、缺失或零字节视频路径及其全部题目 ID。排除依据仅为视频是否存在且非空；现有文件解码失败仍报错，不静默删除。路径越界、标注重复 UID、标注不足 1549 题仍拒绝。即使本次没有缺失，显式使用此选项仍保留子集标记。
+
+如需继续按原粗筛流程抽题，必须显式允许这个来源：
+
+```bash
+python scripts/sample_bench_subset.py --bench lvbench \
+  --manifest data/benchmarks/lvbench/questions.available.jsonl \
+  --out runs/screen/lvbench_available/sample_42.jsonl \
+  --seed 42 --n 150 --proportional --allow-incomplete-population
+
+export M=runs/screen/lvbench_available/sample_42.jsonl
+```
+
+若要评测所有现有视频对应的题，直接设 `M=data/benchmarks/lvbench/questions.available.jsonl`。后续使用 05/13 中的 `eval_bench_*.py --manifest "$M"` 入口和全新输出目录；所有模型必须用同一清单。`prepare_bench_full.py` / `run_bench_full.py` 仍要求官方完整库存，不接受这个子集。报告注明实际题数、视频数、覆盖率和排除列表；不能直接同官方全量成绩比较。子集来源元数据会保存在抽题元数据中，补齐视频后应重新构建新的清单并重新评测，勿混合两套覆盖范围。
+
 ## 6. 回到容器构建清单
 
 按 06 配置好 data 挂载后，在容器的 `/workspace/Jev-as-Controller` 执行：

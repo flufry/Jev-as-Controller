@@ -200,17 +200,17 @@ BENCH=mlvu
 M=runs/screen/$BENCH/sample_44.jsonl
 
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
-  --out "runs/screen/$BENCH/controller_loglinear_42" --fusion loglinear --beta 2
+  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_logits_44" \
+  --out "runs/screen/$BENCH/controller_loglinear_44" --fusion loglinear --beta 2
 
 # 单独评测旧方法：同一份 Jev logits 先 softmax，再按旧公式融合。
 python scripts/eval_bench_controller.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
-  --out "runs/screen/$BENCH/controller_probability_42" --fusion probability --beta 2
+  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_logits_44" \
+  --out "runs/screen/$BENCH/controller_probability_44" --fusion probability --beta 2
 
 python scripts/summarize_bench.py --manifest "$M" \
-  --qwen "runs/screen/$BENCH/qwen_logits_42" --videojev "runs/screen/$BENCH/videojev_logits_42" \
-  --controller "runs/screen/$BENCH/controller_loglinear_42" --out "runs/screen/$BENCH/summary_loglinear_42" \
+  --qwen "runs/screen/$BENCH/qwen_logits_44" --videojev "runs/screen/$BENCH/videojev_logits_44" \
+  --controller "runs/screen/$BENCH/controller_loglinear_44" --out "runs/screen/$BENCH/summary_loglinear_44" \
   --beta-sweep 1,2,3 --bootstrap 10000 --random-repeats 50 --seed 42
 
 # 三个 bench 分别完成上面流程后：

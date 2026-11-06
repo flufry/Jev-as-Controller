@@ -202,7 +202,7 @@ def score_answers(rows, predictions, benchmark):
 
 
 def code_files():
-    names = ['timejev/bench_full.py', 'scripts/eval_bench_full_source.py', 'scripts/run_bench_full.py',
+    names = ['timejev/bench_input_cache.py', 'scripts/run_bench_cached_source.py', 'timejev/bench_full.py', 'scripts/eval_bench_full_source.py', 'scripts/run_bench_full.py',
         'scripts/summarize_bench_full.py', 'scripts/prepare_bench_full.py', 'scripts/bench_io.py',
         'scripts/build_bench_manifest.py', 'scripts/bench_compat.py',
         'scripts/eval_longvideobench_qwen.py', 'scripts/eval_longvideobench_qwen36.py',

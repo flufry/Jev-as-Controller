@@ -226,8 +226,8 @@ def test_plan_all_methods_and_no_sampling_seed_used_for_selection(prepared):
         '--max-memory-gib-per-gpu','30,45,45,45','--dry-run'])
     stages=runner.make_plan(args)
     assert len(stages)==10
-    assert [s['name'] for s in stages]==(['qwen_controller','videojev_controller','videojev_baseline']+
-        [f'{role}_seed{seed}' for seed in full.SEEDS for role in ['native','summary']]+['summary'])
+    assert [s['name'] for s in stages]==(['qwen_controller']+[f'native_seed{s}' for s in full.SEEDS]+
+        ['videojev_controller','videojev_baseline']+[f'summary_seed{s}' for s in full.SEEDS]+['summary'])
     for stage in stages[:-1]:
         assert stage['command'][stage['command'].index('--seed')+1]==str(stage['seed'])
         assert '--sample-seed' not in stage['command']
@@ -235,7 +235,8 @@ def test_plan_all_methods_and_no_sampling_seed_used_for_selection(prepared):
         if stage['kind']=='qwen_logits':assert stage['command'][stage['command'].index('--max-frames')+1]=='2048'
     assert len({s['directory'] for s in stages})==10
     assert sum(s['kind']!='cpu' for s in stages)==6
-    assert all(s['seed']==42 for s in stages[:3])
+    assert all(s['seed']==42 for s in stages if s['kind'] in ('qwen_logits','videojev'))
+    assert args.input_hash_mode=='once'
     runner.run(args)
     assert not (manifest.parent/'experiment.json').exists()
     assert not (manifest.parent/'sources').exists()
@@ -339,7 +340,7 @@ def test_full_native_entry_generates_all_questions_and_records_seed(prepared,tmp
 
 def test_runner_records_failure_resumes_and_checks_completed_hashes(prepared,monkeypatch):
     manifest,rows,metadata=prepared;base=manifest.parent
-    args=runner.parser().parse_args(['--bench','mlvu','--base',str(base),'--qwen-gpus','0,1,2,3'])
+    args=runner.parser().parse_args(['--bench','mlvu','--base',str(base),'--qwen-gpus','0,1,2,3','--input-hash-mode','always'])
     stages=runner.make_plan(args)
     calls=[];fail={'once':True}
     class Process:
@@ -367,7 +368,7 @@ def test_runner_records_failure_resumes_and_checks_completed_hashes(prepared,mon
     args.resume=True
     runner.run(args)
     assert len(calls)==11  # 10 stages plus the failed attempt; completed source not rerun.
-    assert '--resume' in calls[2]
+    assert '--resume' in calls[5]
     assert full.read_json(base/'experiment.json')['status']=='completed'
     (base/'sources/qwen_controller/metrics.json').write_text('tampered')
     with pytest.raises(ValueError,match='SHA'):runner.run(args)
@@ -484,10 +485,10 @@ def test_shared_source_layout_rejects_ambiguity(tmp_path):
 def test_reuse_completed_sources_keeps_originals_and_skips_gpu(suite,tmp_path,monkeypatch):
     manifest,rows,metadata=suite;old=manifest.parent;new=tmp_path/'new_queue'
     args=runner.parser().parse_args(['--bench','mlvu','--manifest',str(manifest),'--base',str(new),
-        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev'])
+        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev','--input-hash-mode','always'])
     stages=runner.make_plan(args)
-    assert all(s['reuse'] for s in stages[:3])
-    assert all(Path(s['directory']).is_relative_to(old) for s in stages[:3])
+    assert sum(s.get('reuse',False) for s in stages)==3
+    assert all(Path(s['directory']).is_relative_to(old) for s in stages if s.get('reuse'))
     originals={str(p):p.read_bytes() for p in (old/'sources').rglob('*') if p.is_file()}
     calls=[]
     class StopBeforeNative:
@@ -498,7 +499,8 @@ def test_reuse_completed_sources_keeps_originals_and_skips_gpu(suite,tmp_path,mo
     monkeypatch.setattr(runner.subprocess,'check_output',lambda *a,**kw:'fixture')
     with pytest.raises(RuntimeError,match='stop before GPU'):runner.run(args)
     state=full.read_json(new/'experiment.json')
-    assert all(state['steps'][s['name']]['status']=='reused' for s in stages[:3])
+    assert state['steps']['qwen_controller']['status']=='reused'
+    assert 'videojev_controller' not in state['steps']  # Qwen优先，尚未轮到Jev
     assert len(calls)==1 and calls[0][calls[0].index('--kind')+1]=='native'
     assert all(Path(p).read_bytes()==data for p,data in originals.items())
     assert not (new/'sources').exists()
@@ -509,7 +511,7 @@ def test_partial_source_reuse_fails_before_gpu(suite,tmp_path,monkeypatch):
     p=old/'sources/videojev_controller/predictions.jsonl'
     p.write_bytes(jsonl_bytes(full.read_jsonl(p)[:-1]))
     args=runner.parser().parse_args(['--bench','mlvu','--manifest',str(manifest),'--base',str(tmp_path/'new'),
-        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev'])
+        '--reuse-sources-from',str(old),'--qwen-checkpoint','/models/qwen','--videojev-checkpoint','/models/videojev','--input-hash-mode','always'])
     monkeypatch.setattr(runner.subprocess,'Popen',lambda *a,**kw:pytest.fail('不应启动GPU'))
     monkeypatch.setattr(runner.subprocess,'check_output',lambda *a,**kw:'fixture')
     with pytest.raises(ValueError,match='结果缺题'):runner.run(args)
