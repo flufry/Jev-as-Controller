@@ -1,4 +1,4 @@
-"""四个视频 benchmark 的全量清单、固定题集三 seed 采样及来源核验。"""
+"""视频 benchmark 的全量清单、固定题集三 seed 采样及来源核验。"""
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -12,10 +12,10 @@ import statistics
 from scripts.bench_io import json_bytes, jsonl_bytes, sha256, write_new
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARKS = ('longvideobench', 'videomme', 'mlvu', 'lvbench')
+BENCHMARKS = ('longvideobench', 'videomme', 'mlvu', 'lvbench', 'mvbench')
 SEEDS = (42, 43, 44)
-COUNTS = dict(longvideobench=1337, videomme=2700, mlvu=2174, lvbench=1549)
-SPLITS = dict(longvideobench='validation', videomme='test', mlvu='dev_mcq', lvbench='test')
+COUNTS = dict(longvideobench=1337, videomme=2700, mlvu=2174, lvbench=1549, mvbench=4000)
+SPLITS = dict(longvideobench='validation', videomme='test', mlvu='dev_mcq', lvbench='test', mvbench='test')
 SCHEMA = 'video_bench_full_manifest_v1'
 NAMES = dict(qwen_native='Qwen3.6-35B-A3B（自回归）', qwen_logits='Qwen3.6-35B-A3B（单步生成）',
     videojev='VideoJev-4B', controller_probability='Jev-as-Controller（旧概率融合）',
@@ -23,7 +23,7 @@ NAMES = dict(qwen_native='Qwen3.6-35B-A3B（自回归）', qwen_logits='Qwen3.6-
 # 两版 Controller 使用同一均匀随机序列，沿用 latest 的比较规则。
 RNG_METHODS = dict(qwen_logits='qwen36', videojev='videojev', controller_probability='jev_as_controller',
                    controller_loglinear='jev_as_controller')
-BENCHMARK_NAMES = dict(longvideobench='LongVideoBench', videomme='Video-MME', mlvu='MLVU', lvbench='LVBench')
+BENCHMARK_NAMES = dict(longvideobench='LongVideoBench', videomme='Video-MME', mlvu='MLVU', lvbench='LVBench', mvbench='MVBench')
 
 
 def read_json(path):
@@ -34,13 +34,38 @@ def read_jsonl(path):
     return [json.loads(line) for line in Path(path).read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
-def _official_rows(benchmark, reference):
+def mvbench_coverage(scope):
+    from timejev.mvbench_benchmark import DEFAULT_TASKS, TASK_SPECS, OFFICIAL_QUESTIONS_PER_TASK
+    if scope not in ('public19','full20'):
+        raise ValueError('MVBench scope必须为public19或full20')
+    tasks=sorted(DEFAULT_TASKS if scope=='public19' else TASK_SPECS)
+    return dict(scope=scope, tasks=tasks, task_count=len(tasks),
+        expected_questions_per_task=OFFICIAL_QUESTIONS_PER_TASK,
+        expected_questions=len(tasks)*OFFICIAL_QUESTIONS_PER_TASK,
+        official_full_benchmark=scope=='full20', official_full_questions=4000,
+        excluded_tasks=['fine_grained_pose'] if scope=='public19' else [],
+        label='MVBench 19个公开任务（3800题）' if scope=='public19' else 'MVBench 20任务（4000题）')
+
+
+def expected_count(benchmark, scope=None):
+    return mvbench_coverage(scope or 'public19')['expected_questions'] if benchmark=='mvbench' else COUNTS[benchmark]
+
+
+def _official_rows(benchmark, reference, mvbench_scope=None):
     """只用官方标注构造题目身份；保留原始选项顺序和完整库存验证。"""
     from scripts.build_bench_manifest import read_annotation, mlvu_reference, validate_lvbench
     from timejev.qa_manifest import parse_choice
     reference = Path(reference).resolve()
     if benchmark == 'mlvu':
         official, files = mlvu_reference(reference)
+    elif benchmark == 'mvbench':
+        from scripts.build_bench_manifest import mvbench_reference
+        coverage=mvbench_coverage(mvbench_scope or 'public19')
+        if not reference.is_dir():raise ValueError('MVBench全量标注需要任务JSON目录')
+        official,files=[],[]
+        for task in coverage['tasks']:
+            task_rows,task_files=mvbench_reference(reference/(task+'.json'))
+            official.extend(task_rows);files.extend(task_files)
     else:
         official, files = read_annotation(reference), [reference]
     expected = []
@@ -67,6 +92,19 @@ def _official_rows(benchmark, reference):
             expected.append(dict(id='mlvu/'+r['official_id'], question_id=r['official_id'],
                 video_key='mlvu/'+Path(r['video']).stem, query=r['question'], options=formatted_options(r),
                 answer_index=r['candidates'].index(r['answer']), stratum=r['task_type'], task_type=r['task_type']))
+    elif benchmark == 'mvbench':
+        from timejev.mvbench_benchmark import TASK_SPECS, materialized_video_path, source_relative_path
+        for r in official:
+            task=r['task_type'];video=materialized_video_path(task,r).as_posix()
+            item=dict(id='mvbench/'+r['official_id'], question_id=r['official_id'],
+                video_key='mvbench/'+video, query=r['question'],
+                options=[f'{chr(65+i)}. {v}' for i,v in enumerate(r['candidates'])],
+                answer_index=r['candidates'].index(r['answer']), stratum=task, task_type=task,
+                source_video=source_relative_path(task,r).as_posix())
+            if TASK_SPECS[task][3]:
+                item.update(clip_start=r['start'],clip_end=r['end'],
+                    media_transform='frames_3fps_to_mp4' if TASK_SPECS[task][2]=='frames' else 'time_bound_to_mp4')
+            expected.append(item)
     elif benchmark == 'lvbench':
         validate_lvbench(official)
         for video in official:
@@ -78,17 +116,18 @@ def _official_rows(benchmark, reference):
                     stratum=json.dumps(sorted(qa['question_type']), ensure_ascii=False, separators=(',', ':'))))
     else:
         raise ValueError('未知 benchmark')
-    if len(expected) != COUNTS[benchmark] or len({r['id'] for r in expected}) != len(expected):
+    if len(expected) != expected_count(benchmark,mvbench_scope) or len({r['id'] for r in expected}) != len(expected):
         raise ValueError('官方标注不完整或 ID 重复')
     return {r['id']:r for r in expected}, {str(p.resolve()):sha256(p) for p in files}
 
 
-def _payload(benchmark, source_manifest, reference, out):
+def _payload(benchmark, source_manifest, reference, out, mvbench_scope=None):
     source_manifest, reference, out = map(lambda p:Path(p).resolve(), (source_manifest, reference, out))
     before = sha256(source_manifest)
-    official, reference_hashes = _official_rows(benchmark, reference)
+    official, reference_hashes = (_official_rows(benchmark, reference, mvbench_scope) if benchmark=='mvbench'
+        else _official_rows(benchmark, reference))
     rows = read_jsonl(source_manifest)
-    if (len(rows) != COUNTS[benchmark] or len({r['id'] for r in rows}) != len(rows)
+    if (len(rows) != expected_count(benchmark,mvbench_scope) or len({r['id'] for r in rows}) != len(rows)
             or {r['id'] for r in rows} != set(official)):
         raise ValueError('必须是完整官方题集，拒绝子集、重复题或未知 ID')
     result, media, owners = [], {}, {}
@@ -108,6 +147,14 @@ def _payload(benchmark, source_manifest, reference, out):
         source = raw.get('media_source', dict(kind='video', path=raw['video_path']))
         if source.get('kind') != 'video' or (source_manifest.parent/source['path']).resolve() != path or not path.is_file():
             raise ValueError(f'需要完整原视频且路径一致：{path}')
+        if benchmark=='mvbench':
+            # 边界任务必须沿用已物化裁剪/帧转视频的素材，不可误读完整原片。
+            for key in ('stratum','task_type','source_video','clip_start','clip_end','media_transform'):
+                if raw.get(key)!=target.get(key):
+                    raise ValueError(f'MVBench任务/时间边界或素材转换不一致：{raw["id"]}/{key}')
+            relative=Path(target['video_key'].removeprefix('mvbench/'))
+            if tuple(path.parts[-len(relative.parts):])!=relative.parts:
+                raise ValueError(f'MVBench素材路径不是官方任务的已物化视频：{raw["id"]}')
         state = (str(path), raw['duration'])
         if media.setdefault(raw['video_key'], state) != state or owners.setdefault(str(path), raw['video_key']) != raw['video_key']:
             raise ValueError('视频分组、路径或时长不一致')
@@ -126,6 +173,7 @@ def _payload(benchmark, source_manifest, reference, out):
         manifest_sha256=hashlib.sha256(data).hexdigest(), selected_ids=[r['id'] for r in rows],
         strata=dict(Counter(r['stratum'] for r in result)), source_manifest=str(source_manifest),
         reference=str(reference), verified_inputs=files)
+    if benchmark=='mvbench':metadata['coverage']=mvbench_coverage(mvbench_scope or 'public19')
     return data, metadata
 
 
@@ -135,13 +183,15 @@ def verify_files(files):
             raise ValueError(f'文件 SHA 不匹配或文件已变化：{path}')
 
 
-def prepare(benchmark, source_manifest, reference, out):
+def prepare(benchmark, source_manifest, reference, out, *, mvbench_scope=None):
     if benchmark not in BENCHMARKS:
         raise ValueError('未知 benchmark')
+    if benchmark!='mvbench' and mvbench_scope is not None:
+        raise ValueError('--mvbench-scope仅用于MVBench')
     out = Path(out).resolve()
     if out.exists() or out.with_suffix('.meta.json').exists():
         raise FileExistsError('拒绝覆盖已有全量清单')
-    data, meta = _payload(benchmark, source_manifest, reference, out)
+    data, meta = _payload(benchmark, source_manifest, reference, out, mvbench_scope)
     write_new(out, data)
     write_new(out.with_suffix('.meta.json'), json_bytes(meta))
     return meta
@@ -152,10 +202,12 @@ def read_full(manifest):
     meta = read_json(manifest.with_suffix('.meta.json'))
     bench = meta.get('benchmark')
     if (meta.get('schema') != SCHEMA or bench not in BENCHMARKS
-            or meta.get('selection_seed', 'missing') is not None or meta.get('n') != COUNTS[bench]):
+            or meta.get('selection_seed', 'missing') is not None
+            or meta.get('n') != expected_count(bench,meta.get('coverage',{}).get('scope'))):
         raise ValueError('需要已核验的全量固定题集，不能使用抽样清单')
     verify_files(meta['verified_inputs'])
-    data, expected = _payload(bench, meta['source_manifest'], meta['reference'], manifest)
+    data, expected = _payload(bench, meta['source_manifest'], meta['reference'], manifest,
+        meta.get('coverage',{}).get('scope') if bench=='mvbench' else None)
     if meta != expected or manifest.read_bytes() != data:
         raise ValueError('全量清单、顺序或元数据与官方来源不一致')
     rows = read_jsonl(manifest)
@@ -194,6 +246,13 @@ def score_answers(rows, predictions, benchmark):
         if set(groups) != set(TASK_COUNTS):
             raise ValueError('MLVU M-Avg 必须覆盖七个任务')
         result.update(m_avg=statistics.mean(g['accuracy'] for g in groups.values()), primary_metric='m_avg', by_task=groups)
+    if benchmark == 'mvbench':
+        coverage=next((mvbench_coverage(scope) for scope in ('public19','full20')
+            if set(groups)==set(mvbench_coverage(scope)['tasks'])),None)
+        if coverage is None or any(g['n']!=coverage['expected_questions_per_task'] for g in groups.values()):
+            raise ValueError('MVBench全量必须是19公开任务或20任务，每任务完整200题')
+        result.update(coverage=coverage,by_task=groups,
+            task_average_accuracy=statistics.mean(g['accuracy'] for g in groups.values()))
     if benchmark == 'longvideobench':
         result['by_duration_group'] = groups
     if cats:
@@ -213,7 +272,7 @@ def code_files():
         'timejev/user_data.py', 'timejev/multiturn_inputs.py', 'timejev/decision_inputs.py',
         'videojev_hf/processing_videojev.py', 'videojev_hf/modeling_videojev.py',
         'timejev/longvideobench_benchmark.py', 'timejev/mlvu_benchmark.py', 'timejev/videomme_benchmark.py',
-        'timejev/qa_manifest.py']
+        'timejev/qa_manifest.py', 'timejev/mvbench_benchmark.py']
     return {name:sha256(ROOT/name) for name in names}
 
 
@@ -475,6 +534,7 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
         rng="random.Random(f'{seed}:{method}'); 单步Qwen method=qwen36; VideoJev method=videojev; 两版Controller method=jev_as_controller; 固定原题序CDF采样",
         or_scope='same_seed_sampled_2fps_qwen_and_sampled_4fps_videojev',sources=sources,verified_sources=files,
         code_sha256=code_files(),note='固定全量题集；三份候选分数各计算一次，seed42/43/44只控制候选答案采样；native实际生成三遍。OR使用同seed的单步Qwen采样与4FPS VideoJev采样答案，非native OR。argmax另列诊断。')
+    if full['benchmark']=='mvbench':report['coverage']=full['coverage']
     if out is not None:
         out=Path(out);out.mkdir(parents=True)
         for method,dist in distributions.items():
@@ -489,7 +549,8 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
 
 def markdown(report):
     mean_label = '平均 M-Avg' if report['primary_metric']=='m_avg' else '平均准确率'
-    lines=[f'# {BENCHMARK_NAMES[report["benchmark"]]}','',
+    title=report.get('coverage',{}).get('label',BENCHMARK_NAMES[report['benchmark']])
+    lines=[f'# {title}','',
         f'固定 {report["n"]} 道题；selection_seed=None；主指标：{report["primary_metric"]}。','',
         '| 方法 | '+' | '.join(f'seed{seed}' for seed in report['inference_seeds'])+f' | {mean_label} | 样本方差 |',
         '|---|'+'---:|'*(len(report['inference_seeds'])+2)]
@@ -503,6 +564,9 @@ def markdown(report):
         variance_text = '—（单seed）' if variance is None else f'{variance:.4f}'
         lines.append('| '+NAMES[method]+' | '+' | '.join(f'{x*100:.2f}%' for x in s['values'])+
             f' | {mean} | {variance_text} |')
+    if report['benchmark']=='mvbench':
+        lines+=['','覆盖范围：'+report['coverage']['label']+'；每任务200题，Accuracy等于任务准确率均值。',
+            '素材沿用任务标注的时间边界及帧序列转视频；本项目提示词、2/4FPS采样与VideoChat2原评测协议不同。']
     lines += ['',report['note'],'',report['rng'],'',
         'native Qwen与VideoJev独立基线：4 FPS/4096帧；单步Qwen及融合双源：2 FPS/2048帧。单步生成指首步候选内采样，并非完整词表的自回归生成。两版Controller均β=2，候选采样temperature=1，无top-k/top-p。',
         '旧公式 softmax(z_Q + 2*p_J)；新公式 softmax(z_Q + 2*s_J)。OR对同seed的单步Qwen 2FPS采样答案与VideoJev 4FPS采样答案逐题取“至少一个正确”，与latest公开表定义一致；native不参与该OR。无效native答案在自身准确率中计错并保留分母。',

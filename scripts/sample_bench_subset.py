@@ -32,6 +32,10 @@ def validate_population(bench, rows):
     elif bench == 'mlvu':
         from timejev.mlvu_benchmark import TASK_COUNTS
         valid = counts == TASK_COUNTS and videos == 1122
+    elif bench == 'mvbench':
+        from timejev.mvbench_benchmark import TASK_ARCHIVES, OFFICIAL_QUESTIONS_PER_TASK
+        valid = bool(counts) and set(counts) <= set(TASK_ARCHIVES) and all(
+            count == OFFICIAL_QUESTIONS_PER_TASK for count in counts.values())
     else:
         valid = len(rows) == 1549
     if not valid:
@@ -92,7 +96,8 @@ def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportion
         if per_task is not None:
             raise ValueError('--per-task is only for MLVU')
         quotas = allocate_counts(counts, 150 if n is None else n)
-        strategy = 'proportional_question_type_combinations'
+        strategy = ('proportional_mvbench_task' if bench == 'mvbench'
+                    else 'proportional_question_type_combinations')
     if any(quotas[g] > counts[g] for g in groups):
         raise ValueError('Sample quota exceeds a stratum population')
     rng, selected = random.Random(seed), set()
@@ -101,7 +106,7 @@ def sample(bench, out, manifest=None, seed=42, n=None, per_task=None, proportion
     chosen = [r for r in rows if r['id'] in selected]
     data = jsonl_bytes(portable_rows(chosen, out))
     meta = dict(schema='bench_subset_v1', benchmark=bench, unit='question', seed=seed, n=len(chosen),
-        sampling=strategy, quota_method='integer_largest_remainder' if bench == 'lvbench' else 'equal',
+        sampling=strategy, quota_method='integer_largest_remainder' if bench in ('lvbench', 'mvbench') else 'equal',
         source_manifest=str(manifest), source_sha256=source_sha, source_counts=counts, quotas=quotas,
         tie_break_order=groups, selected_ids=[r['id'] for r in chosen],
         sample_sha256=hashlib.sha256(data).hexdigest(), sampler_sha256=sha256(__file__),

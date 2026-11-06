@@ -1,4 +1,4 @@
-"""汇总/只读重验四个benchmark的全量三seed结果及单步Qwen/VideoJev采样OR。"""
+"""汇总/只读重验视频benchmark的全量三seed结果及单步Qwen/VideoJev采样OR。"""
 import argparse
 import json
 from pathlib import Path

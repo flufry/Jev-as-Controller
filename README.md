@@ -66,9 +66,9 @@ Qwen 设置为 `temperature=0.7, top_p=0.8, top_k=20, min_p=0, presence_penalty=
 
 **4 FPS 基线与 2 FPS Controller 并不构成严格的 FLOPs 或耗时对齐。** 相同视觉 token 预算也不能证明计算开销相同。结果差异同时包含输入采样协议与融合的影响。
 
-## 四个 benchmark 全量三 seed（新入口）
+## 视频 benchmark 全量三 seed（新入口）
 
-支持 LongVideoBench 1337题、Video-MME 2700题、MLVU-Dev 2174题和LVBench 1549题。**对齐latest：三份候选来源（Qwen 2 FPS、VideoJev 2 FPS、VideoJev 4 FPS）各运行一次，三个seed复用分数进行答案采样；Qwen native 4 FPS按seed42/43/44实际生成三遍，共6个GPU阶段**。三个seed使用同一完整题集；两版Controller共用随机数序列。六行表的OR使用同seed的**单步Qwen 2 FPS采样答案与VideoJev 4 FPS采样答案**，与latest公开表一致，不是native双4FPS OR。支持只读复用经过完整核验的旧候选来源。
+支持 LongVideoBench 1337题、Video-MME 2700题、MLVU-Dev 2174题、LVBench 1549题，以及MVBench公开19任务3800题/完整20任务4000题。MVBench独立命令见 [全量三seed说明](docs/MVBENCH_FULL_THREE_SEEDS.md)。**对齐latest：三份候选来源（Qwen 2 FPS、VideoJev 2 FPS、VideoJev 4 FPS）各运行一次，三个seed复用分数进行答案采样；Qwen native 4 FPS按seed42/43/44实际生成三遍，共6个GPU阶段**。三个seed使用同一完整题集；两版Controller共用随机数序列。六行表的OR使用同seed的**单步Qwen 2 FPS采样答案与VideoJev 4 FPS采样答案**，与latest公开表一致，不是native双4FPS OR。支持只读复用经过完整核验的旧候选来源。
 
 准备、运行、断点恢复及各benchmark分开的完整命令见 [全量三seed运行说明](docs/BENCH_FULL_THREE_SEEDS.md)。新结果独立写入`runs/full/<benchmark>/summary/results.md`，包含三seed、均值、ddof=1样本方差及分任务结果；MLVU主表使用M-Avg。下方历史结果不会被新流程覆盖。 后续新实验可加`--parallel-models`让Qwen与VideoJev在互不重叠的GPU上并行，默认串行先跑Qwen logits和全部native，再跑两份VideoJev，最后汇总；默认首次校验全部输入哈希，后续大文件仅检查大小/mtime并复用指纹（可用`--input-hash-mode always`选择每阶段完整校验）。请勿在现有Video-MME运行中同步代码。
 

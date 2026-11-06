@@ -73,8 +73,9 @@ def generic_score(rows, by_id):
             category_hits[category] += hit
     groups = {g: dict(n=totals[g], correct=hits[g], accuracy=hits[g] / totals[g]) for g in sorted(totals)}
     bench = rows[0].get('benchmark', 'longvideobench')
+    scope = benchmark_scope(rows)
     report = dict(n=len(rows), videos=len({r['video_key'] for r in rows}), correct=sum(hits.values()),
-        accuracy=sum(hits.values()) / len(rows), benchmark=bench, split='screening_subset',
+        accuracy=sum(hits.values()) / len(rows), benchmark=bench, split=scope,
         primary_metric='accuracy', by_stratum=groups, training_overlap_verified=False)
     if bench == 'mlvu':
         from timejev.mlvu_benchmark import TASK_COUNTS
@@ -86,6 +87,34 @@ def generic_score(rows, by_id):
         report['by_question_type'] = {g: dict(n=category_n[g], correct=category_hits[g],
             accuracy=category_hits[g] / category_n[g]) for g in sorted(category_n)}
     return report
+
+
+def benchmark_scope(rows):
+    if rows and rows[0].get('benchmark') == 'mvbench':
+        from timejev.mvbench_benchmark import DEFAULT_TASKS, TASK_SPECS, OFFICIAL_QUESTIONS_PER_TASK
+        counts = Counter(stratum(row) for row in rows)
+        if (set(counts) == set(DEFAULT_TASKS)
+                and all(count == OFFICIAL_QUESTIONS_PER_TASK for count in counts.values())):
+            return 'mvbench_public19'
+        if (set(counts) == set(TASK_SPECS)
+                and all(count == OFFICIAL_QUESTIONS_PER_TASK for count in counts.values())):
+            return 'mvbench_full20'
+    return 'screening_subset'
+
+
+def manifest_scope(path):
+    meta_path = Path(path).with_suffix('.meta.json')
+    if meta_path.is_file():
+        metadata = json.loads(meta_path.read_text(encoding='utf-8'))
+        coverage = metadata.get('coverage', {})
+        if metadata.get('benchmark') == 'mvbench':
+            from timejev.mvbench_benchmark import DEFAULT_TASKS, TASK_SPECS
+            tasks = set(coverage.get('tasks', ()))
+            if metadata.get('n') == 3800 and tasks == set(DEFAULT_TASKS):
+                return 'mvbench_public19'
+            if metadata.get('n') == 4000 and tasks == set(TASK_SPECS):
+                return 'mvbench_full20'
+    return 'screening_subset'
 
 
 def adapter_hashes(legacy=None):
@@ -112,9 +141,11 @@ def install(legacy=None):
     def write_json(path, value):
         value = deepcopy(value)
         if Path(path).name == 'run.json':
-            value.update(schema='video_bench_screen_run_v1', split='screening_subset',
+            scope = manifest_scope(value['manifest'])
+            value.update(schema='video_bench_screen_run_v1', split=scope,
                          sampling='manifest_defined', training_overlap_verified=False,
-                         note='视频 benchmark 粗筛子集；非官方全量指标')
+                         note='MVBench 19 个公开任务，NTU 类别未包含' if scope == 'mvbench_public19'
+                         else '视频 benchmark 子集；非官方全量指标')
             value['identity'].setdefault('code_sha256', {}).update(hashes)
         saved['write_json'](path, value)
 
@@ -140,7 +171,7 @@ def install(legacy=None):
     def model_write_json(path, value):
         if Path(path).name == 'run.json' and value['identity']['method'] != 'jev_as_controller':
             value = deepcopy(value)
-            value.update(schema='video_bench_screen_run_v1', split='screening_subset',
+            value.update(schema='video_bench_screen_run_v1', split=manifest_scope(value['manifest']),
                          sampling='manifest_defined', training_overlap_verified=False)
             saved['write_json'](path, value)
         else:

@@ -227,7 +227,7 @@ class NativeExperiment:
         if rows is None and sample_seed is None:
             sample_seed = getattr(args, 'sample_seed', 42)
         rows = load_sample(args.manifest) if rows is None else rows
-        allowed = ('videomme', 'mlvu', 'lvbench', 'longvideobench') if full_dataset is not None else ('videomme', 'mlvu', 'lvbench')
+        allowed = ('videomme', 'mlvu', 'lvbench', 'longvideobench', 'mvbench') if full_dataset is not None else ('videomme', 'mlvu', 'lvbench')
         if full_dataset is not None and (full_dataset.get('benchmark') != benchmark
                 or full_dataset.get('selection_seed', 'missing') is not None
                 or full_dataset.get('n') != len(rows) or getattr(args, 'limit', None) is not None):

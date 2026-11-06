@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 
-BENCHES = ('videomme', 'mlvu', 'lvbench')
+BENCHES = ('videomme', 'mlvu', 'lvbench', 'mvbench')
 
 
 def sha256(path):

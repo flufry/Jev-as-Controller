@@ -1,4 +1,4 @@
-"""Download the three screening benchmarks and arrange their official inputs."""
+"""Download benchmark inputs and arrange video or frame-derived media."""
 import argparse
 import json
 import os
@@ -13,9 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.bench_io import sha256
 from scripts.build_bench_manifest import mlvu_reference, validate_lvbench
+from timejev.mvbench_benchmark import (TASK_ARCHIVES, TASK_SPECS, materialized_video_path,
+    selected_tasks, source_relative_path, validate_reference as validate_mvbench, video_relative_path)
 from timejev.videomme_benchmark import validate_reference as validate_videomme
 
-REPOS = {"videomme": "lmms-eval/Video-MME", "mlvu": "MLVU/MVLU", "lvbench": "zai-org/LVBench"}
+REPOS = {"videomme": "lmms-eval/Video-MME", "mlvu": "MLVU/MVLU", "lvbench": "zai-org/LVBench",
+         "mvbench": "OpenGVLab/MVBench"}
+SCREENING_BENCHES = ("videomme", "mlvu", "lvbench")
 
 
 def write_json(path, value):
@@ -41,7 +45,7 @@ def copy_annotation(source, target):
     shutil.copy2(source, target)
 
 
-def snapshot(bench, base, annotations_only, revision, workers):
+def snapshot(bench, base, annotations_only, revision, workers, mvbench_tasks=None):
     from huggingface_hub import HfApi, snapshot_download
     repo = REPOS[bench]
     record = base / "download_revision.json"
@@ -57,12 +61,16 @@ def snapshot(bench, base, annotations_only, revision, workers):
         "videomme": ["videomme/test-*.parquet"],
         "mlvu": ["MLVU/json/[1-7]_*.json"],
         "lvbench": ["video_info.meta.jsonl"],
+        "mvbench": [f"json/{task}.json" for task in selected_tasks(mvbench_tasks)],
     }[bench]
     if not annotations_only:
         if bench == "videomme":
             patterns += ["videos_chunked_*.zip"]
         elif bench == "mlvu":
             patterns += ["MLVU/video/[1-7]_*/**"]
+        elif bench == "mvbench":
+            patterns += [f"video/{archive}" for archive in dict.fromkeys(
+                TASK_ARCHIVES[task] for task in selected_tasks(mvbench_tasks) if TASK_ARCHIVES[task])]
     print(f"Downloading {repo}@{revision} -> {base / 'download'}", flush=True)
     snapshot_download(repo_id=repo, repo_type="dataset", revision=revision,
                       local_dir=base / "download", allow_patterns=patterns, max_workers=workers)
@@ -149,6 +157,117 @@ def mlvu(base, download, annotations_only):
         write_json(base / "video-map.json", mapping)
 
 
+def unpack_mvbench(archive_path, videos, expected, *, frame_dirs=False):
+    """Extract annotated media, retaining nested names and skipping prior files."""
+    videos.mkdir(parents=True, exist_ok=True)
+    expected = {video_relative_path(value, frames=frame_dirs).parts: value for value in expected}
+    by_depth = {}
+    for parts in expected:
+        by_depth.setdefault(len(parts), set()).add(parts)
+    seen = set()
+    with zipfile.ZipFile(archive_path) as archive:
+        for info in archive.infolist():
+            member = PurePosixPath(info.filename)
+            if info.is_dir() or member.is_absolute() or '..' in member.parts or chr(92) in info.filename:
+                continue
+            if frame_dirs:
+                if member.suffix.lower() != '.jpg':
+                    continue
+                parent = member.parts[:-1]
+                matches = [parent[-depth:] for depth, values in by_depth.items()
+                           if len(parent) >= depth and parent[-depth:] in values]
+            else:
+                matches = [member.parts[-depth:] for depth, values in by_depth.items()
+                           if len(member.parts) >= depth and member.parts[-depth:] in values]
+            if not matches:
+                continue
+            if len(matches) != 1 or (not frame_dirs and matches[0] in seen):
+                raise ValueError(f'Ambiguous MVBench ZIP member: {info.filename}')
+            parts = matches[0]
+            seen.add(parts)
+            target = videos.joinpath(*parts, member.name) if frame_dirs else videos.joinpath(*parts)
+            if target.exists():
+                if target.stat().st_size != info.file_size:
+                    raise ValueError(f'Existing MVBench video has a different size: {target}')
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + '.part')
+            with archive.open(info) as source, partial.open('wb') as output:
+                shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+            partial.replace(target)
+    missing = [value for parts, value in expected.items() if
+               not (any(videos.joinpath(*parts).glob('*.jpg')) if frame_dirs
+                    else videos.joinpath(*parts).is_file())]
+    if missing:
+        raise ValueError(f'Missing {len(missing)} MVBench media from {archive_path.name}; first: {missing[:10]}')
+
+
+def materialize_mvbench_clip(source, target, start, end, *, frames=False):
+    """Make the official time-bound interval a normal video for all evaluators."""
+    if target.is_file() and target.stat().st_size:
+        return
+    if not shutil.which('ffmpeg'):
+        raise RuntimeError('MVBench bounded/frame tasks require ffmpeg')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.stem + '.part.mp4')
+    if frames:
+        command = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                   '-framerate', '3', '-start_number', '1', '-i', str(source / '%05d.jpg'),
+                   '-ss', str(start)]
+    else:
+        command = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                   '-ss', str(start), '-i', str(source)]
+    command += ['-t', str(end - start), '-an', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                '-c:v', 'libx264', '-preset', 'veryfast',
+                '-crf', '18', '-pix_fmt', 'yuv420p', str(partial)]
+    subprocess.run(command, check=True)
+    if not partial.is_file() or not partial.stat().st_size:
+        raise ValueError(f'MVBench produced an empty clip: {target}')
+    partial.replace(target)
+
+
+def mvbench(base, download, annotations_only, tasks):
+    groups = {}
+    clips = {}
+    if not annotations_only and any(TASK_SPECS[task][3] for task in selected_tasks(tasks)):
+        if not shutil.which('ffmpeg'):
+            raise RuntimeError('MVBench bounded/frame tasks require ffmpeg before extraction')
+    for task in selected_tasks(tasks):
+        source = download / 'json' / f'{task}.json'
+        rows = json.loads(source.read_text(encoding='utf-8'))
+        validate_mvbench(task, rows)
+        copy_annotation(source, base / 'json' / source.name)
+        if annotations_only:
+            continue
+        archive, owner, media_type, bounded = TASK_SPECS[task]
+        if archive:
+            group = groups.setdefault(archive, (owner, media_type == 'frames', set()))
+            group[2].update(video_relative_path(row['video'], frames=media_type == 'frames').as_posix()
+                            for row in rows)
+        else:
+            missing = [str(base / 'videos' / source_relative_path(task, row)) for row in rows
+                       if not (base / 'videos' / source_relative_path(task, row)).is_file()]
+            if missing:
+                raise FileNotFoundError(f'Licensed NTU RGB+D videos must be staged first: {missing[:3]}')
+        if bounded:
+            for row in rows:
+                target = base / 'videos' / materialized_video_path(task, row)
+                clips[target] = (base / 'videos' / source_relative_path(task, row),
+                                 row['start'], row['end'], media_type == 'frames')
+    for archive_name, (owner, frames, expected) in groups.items():
+        archive = download / 'video' / archive_name
+        if not archive.is_file():
+            raise FileNotFoundError(archive)
+        print(f'Extracting {len(expected)} annotated media from {archive.name}', flush=True)
+        unpack_mvbench(archive, base / 'videos' / owner, expected, frame_dirs=frames)
+    if clips:
+        print(f'Materializing {len(clips)} unique time-bound MVBench clips', flush=True)
+        for index, (target, (source, start, end, frames)) in enumerate(clips.items(), 1):
+            materialize_mvbench_clip(source, target, start, end, frames=frames)
+            if index % 50 == 0 or index == len(clips):
+                print(f'MVBench clips: {index}/{len(clips)}', flush=True)
+
+
 def lvbench(base, download, annotations_only, js_runtime, cookies=None, prepare_local=False):
     annotation = download / "video_info.meta.jsonl"
     rows = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -187,7 +306,8 @@ def lvbench(base, download, annotations_only, js_runtime, cookies=None, prepare_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bench", choices=[*REPOS, "all"], required=True)
+    parser.add_argument("--bench", choices=[*REPOS, "all"], required=True,
+                        help="all retains the original three benchmarks; select mvbench explicitly")
     parser.add_argument("--data-root", type=Path, default=ROOT / "data/benchmarks")
     parser.add_argument("--annotations-only", action="store_true")
     parser.add_argument("--prepare-local", action="store_true", help="Arrange already uploaded files; no network downloads")
@@ -195,14 +315,18 @@ def main():
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--js-runtime", default="deno", help="yt-dlp runtime, e.g. deno or node")
     parser.add_argument("--cookies", type=Path, help="Optional yt-dlp cookies file for LVBench")
+    parser.add_argument("--mvbench-tasks", nargs='+', choices=sorted(TASK_ARCHIVES),
+                        help="MVBench only; default: all 19 publicly downloadable tasks")
     args = parser.parse_args()
     if args.bench == "all" and args.revision:
         parser.error("--revision applies to one benchmark; call the three separately")
+    if args.mvbench_tasks and args.bench != 'mvbench':
+        parser.error('--mvbench-tasks requires --bench mvbench')
     if args.workers < 1:
         parser.error("--workers must be >= 1")
     if not args.prepare_local and os.environ.get("HF_HUB_OFFLINE", "0").upper() in ("1", "TRUE", "YES", "ON"):
         parser.error("unset HF_HUB_OFFLINE before downloading")
-    for bench in REPOS if args.bench == "all" else [args.bench]:
+    for bench in SCREENING_BENCHES if args.bench == "all" else [args.bench]:
         base = args.data_root.resolve() / bench
         if args.prepare_local:
             record = json.loads((base / "download_revision.json").read_text(encoding="utf-8"))
@@ -210,9 +334,12 @@ def main():
                 raise ValueError("Local revision/repository mismatch")
             download = base / "download"
         else:
-            download = snapshot(bench, base, args.annotations_only, args.revision, args.workers)
+            download = snapshot(bench, base, args.annotations_only, args.revision, args.workers,
+                                args.mvbench_tasks)
         if bench == "lvbench":
             lvbench(base, download, args.annotations_only, args.js_runtime, args.cookies, args.prepare_local)
+        elif bench == 'mvbench':
+            mvbench(base, download, args.annotations_only, args.mvbench_tasks)
         else:
             {"videomme": videomme, "mlvu": mlvu}[bench](base, download, args.annotations_only)
         print(f"{bench}: {'annotations' if args.annotations_only else 'download and file inventory'} ready at {base}", flush=True)

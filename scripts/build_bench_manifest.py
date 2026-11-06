@@ -1,4 +1,4 @@
-"""Build full official Video-MME / MLVU-Dev MCQ / LVBench raw-video manifests."""
+"""Build video manifests for supported QA benchmarks and prepared MVBench clips."""
 import argparse
 from collections import Counter
 import json
@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.bench_io import BENCHES, json_bytes, jsonl_bytes, load_rows, portable_rows, sha256, write_new
 from timejev.mlvu_benchmark import TASK_COUNTS, formatted_options, validate_reference as validate_mlvu
+from timejev.mvbench_benchmark import (TASK_SPECS, materialized_video_path,
+    selected_tasks as mvbench_tasks, source_relative_path, validate_reference as validate_mvbench)
 from timejev.videomme_benchmark import validate_reference as validate_videomme
 from timejev.qa_manifest import parse_choice
 
@@ -69,6 +71,21 @@ def mlvu_reference(path):
     return rows, files
 
 
+def mvbench_reference(path):
+    path = Path(path)
+    files = sorted(path.glob('*.json')) if path.is_dir() else [path]
+    if not files:
+        raise ValueError('No supported MVBench annotation files found')
+    mvbench_tasks(tuple(file.stem for file in files))
+    rows = []
+    for file in files:
+        source = read_annotation(file)
+        validate_mvbench(file.stem, source)
+        rows.extend(dict(item, task_type=file.stem, official_id=f'{file.stem}/{index:03d}')
+                    for index, item in enumerate(source))
+    return rows, files
+
+
 def adapt(bench, reference, video_root, video_map=None, *, missing_videos=None):
     """Only question content determines strata; labels never affect selection."""
     video_root, video_map = Path(video_root).resolve(), video_map or {}
@@ -99,6 +116,20 @@ def adapt(bench, reference, video_root, video_map=None, *, missing_videos=None):
                 video_key='mlvu/' + Path(r['video']).stem, video_path=path_for(r['video'], r['video']),
                 query=r['question'], options=formatted_options(r), answer_index=r['candidates'].index(r['answer']),
                 stratum=r['task_type'], task_type=r['task_type'], official_duration=r['duration']))
+    elif bench == 'mvbench':
+        for r in reference:
+            task = r['task_type']
+            video = materialized_video_path(task, r).as_posix()
+            row = dict(id='mvbench/' + r['official_id'], question_id=r['official_id'],
+                video_key='mvbench/' + video, video_path=path_for(video, video), query=r['question'],
+                options=[f'{chr(65+i)}. {value}' for i, value in enumerate(r['candidates'])],
+                answer_index=r['candidates'].index(r['answer']), stratum=task, task_type=task,
+                source_video=source_relative_path(task, r).as_posix())
+            if TASK_SPECS[task][3]:
+                row.update(clip_start=r['start'], clip_end=r['end'],
+                           media_transform='frames_3fps_to_mp4' if TASK_SPECS[task][2] == 'frames'
+                           else 'time_bound_to_mp4')
+            rows.append(row)
     else:
         validate_lvbench(reference)
         for video in reference:
@@ -125,13 +156,16 @@ def build(bench, base, annotation=None, videos=None, out=None, video_map=None, p
     if allow_missing_videos and bench != 'lvbench':
         raise ValueError('--allow-missing-videos is only supported for LVBench')
     base = Path(base).resolve()
-    annotation = Path(annotation or base / ('official.jsonl' if bench == 'lvbench' else 'official.json')).resolve()
+    default_annotation = base / ('official.jsonl' if bench == 'lvbench' else 'json' if bench == 'mvbench' else 'official.json')
+    annotation = Path(annotation or default_annotation).resolve()
     out = Path(out or base / 'questions.jsonl').resolve()
     meta_path = out.with_suffix('.meta.json')
     if out.exists() or meta_path.exists():
         raise FileExistsError('Choose new manifest and metadata paths')
     if bench == 'mlvu':
         reference, files = mlvu_reference(annotation)
+    elif bench == 'mvbench':
+        reference, files = mvbench_reference(annotation)
     else:
         reference, files = read_annotation(annotation), [annotation]
     mapping = json.loads(Path(video_map).read_text(encoding='utf-8')) if video_map else None
@@ -162,6 +196,13 @@ def build(bench, base, annotation=None, videos=None, out=None, video_map=None, p
         sources=before, manifest_sha256=hashlib.sha256(data).hexdigest(),
         strata=dict(Counter(r['stratum'] for r in rows)), duration_source='decoded_video_probe',
         training_overlap_verified=False, builder_sha256=sha256(__file__))
+    if bench == 'mvbench':
+        tasks = sorted({r['task_type'] for r in rows})
+        full = len(tasks) == len(TASK_SPECS)
+        meta['coverage'] = dict(scope='official_full' if full else 'selected_official_tasks',
+            official_full_benchmark=full, tasks=tasks, expected_questions_per_task=200,
+            available_questions=len(rows), official_full_questions=4000,
+            unavailable_public_task=None if 'fine_grained_pose' in tasks else 'fine_grained_pose')
     if allow_missing_videos:
         meta['coverage'] = dict(scope='available_videos_subset', official_full_benchmark=False,
             expected_questions=1549, expected_videos=len(reference),
@@ -179,7 +220,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bench', choices=BENCHES, required=True)
     parser.add_argument('--base', required=True)
-    parser.add_argument('--annotation', help='JSON/JSONL/Parquet; MLVU also accepts its original json/ directory')
+    parser.add_argument('--annotation', help='JSON/JSONL/Parquet; MLVU and MVBench also accept their json/ directories')
     parser.add_argument('--videos', help='Root of decoded video files')
     parser.add_argument('--video-map', help='JSON: official video ID/MLVU video field -> path relative to --videos')
     parser.add_argument('--out')

@@ -1,4 +1,4 @@
-# 四个视频 benchmark：全量固定题集、三个答案采样 seed
+# 视频 benchmark：全量固定题集、三个答案采样 seed
 
 本流程在当前仓库实现，按本地latest提交`cb0518a5ea12129384489ab8eabcaf57956e9d2e`对齐。**三份候选来源各执行一次GPU前向，seed42/43/44复用分布采样；仅native实际生成三遍**。无需等待历史100题实验，不使用latest中的本机运行目录。**全量指有公开标签的评测集，不是训练集或隐藏标签测试集。**
 
@@ -8,6 +8,9 @@
 | Video-MME | 2700 | Accuracy |
 | MLVU-Dev 七类选择题 | 2174 | 七任务宏平均 M-Avg |
 | LVBench | 1549 | Accuracy |
+| MVBench 19公开任务 / 20完整任务 | 3800 / 4000 | Accuracy（等题数任务宏平均） |
+
+MVBench的完整准备、运行和恢复命令见 [MVBench全量三seed](MVBENCH_FULL_THREE_SEEDS.md)。19任务与20任务明确区分，不混报覆盖范围。
 
 ## 采样与方法口径
 

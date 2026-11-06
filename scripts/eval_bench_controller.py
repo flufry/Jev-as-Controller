@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.analyze_controller_changes import read_manifest
-from scripts.bench_compat import generic_score
+from scripts.bench_compat import benchmark_scope, generic_score
 from scripts.bench_io import json_bytes, jsonl_bytes, sample_seed, sha256, source_sample_seed, stratum, write_new
 from scripts.eval_longvideobench_controller import control as upstream_control, FUSION_FORMULAS
 from scripts.summarize_bench import read_run
@@ -75,7 +75,7 @@ def evaluate(manifest, qwen, videojev, out, beta=2., qwen_method='qwen36', fusio
                   'scripts/videojev_candidate_logits.py', 'scripts/analyze_controller_changes.py',
                   'scripts/bench_io.py', 'scripts/bench_compat.py', 'scripts/summarize_bench.py']
     root = Path(__file__).resolve().parents[1]
-    metadata = dict(schema='video_bench_screen_run_v1', benchmark=rows[0]['benchmark'], split='screening_subset',
+    metadata = dict(schema='video_bench_screen_run_v1', benchmark=rows[0]['benchmark'], split=benchmark_scope(rows),
         identity=dict(method='jev_as_controller', manifest_sha256=digest, seed=seed, sample_seed=fixed_seed,
             protocol=protocol,
             beta=beta, fusion=fusion, score_source=score_source, sources=dict(qwen=qs, videojev=js),

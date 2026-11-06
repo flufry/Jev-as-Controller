@@ -2,6 +2,8 @@ Z
 
 # 10 · 新增扩展：Docker 环境跨服务器迁移
 
+迁移到 10.168.100.128 且目标挂载根目录为 /data2/hyj/jev 时，优先参照 [16-迁移Jev到10.168.100.128.md](16-迁移Jev到10.168.100.128.md)。下文 /public 路径只是旧通用示例。
+
 已在其它服务器装好项目环境时，可以保存镜像并导入目标服务器，跳过 wheel 预下载和重新构建。只安装好了 Docker Engine 或只拉取了 PyTorch 基础镜像，不等于已配置好项目依赖，迁移基础镜像仍需安装本项目环境。
 
 以下在两台服务器的**宿主机**执行。示例使用 sudo；已有 Docker 权限时可省略。目标数据目录使用 `/public/hyj/jev`。命令中的源路径、容器名和目标 IP 按实际替换。两台机器应为 Linux x86_64，目标需要 NVIDIA 驱动及 NVIDIA Container Toolkit；镜像不会迁移宿主机驱动。本项目后端当前针对 SM89，迁到其它 GPU 架构仍需适配与验证。
@@ -35,7 +37,7 @@ sudo docker commit jev-bench jev-bench:migrated
 然后在源服务器有空间的磁盘保存镜像：
 
 ```bash
-TRANSFER=/$HOME/hyj/jev/transfer
+TRANSFER="$HOME/jev/transfer"
 mkdir -p "$TRANSFER"
 set -o pipefail
 sudo docker save jev-bench:migrated | gzip -1 > "$TRANSFER/jev-bench.tar.gz"
@@ -53,10 +55,10 @@ sudo docker save jev-bench:migrated | gzip -1 > "$TRANSFER/jev-bench.tar.gz"
 
 ```bash
 TARGET=hyj@目标服务器IP
-ssh "$TARGET" 'mkdir -p /public/hyj/jev/transfer'
+ssh "$TARGET" 'mkdir -p "$HOME/jev/transfer"'
 rsync -a --partial --info=progress2 \
   "$TRANSFER/jev-bench.tar.gz" "$TRANSFER/jev-bench.tar.gz.sha256" \
-  "$TARGET:/$HOME/hyj/jev/transfer/"
+  "$TARGET:jev/transfer/"
 ```
 
 单独复制仓库与持久化数据。源目录以源服务器实际挂载为准；下面假设为 `~/srv/jev`，包含 `.git`、代码与后端目录。目标已有不同代码修改时，先选新的目标目录，避免覆盖。

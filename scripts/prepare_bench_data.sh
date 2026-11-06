@@ -10,7 +10,7 @@ bench_python="${BENCH_PY:-}"
 usage() {
   cat <<'EOF'
 Usage: bash scripts/prepare_bench_data.sh [options]
-  --bench all|videomme|mlvu|lvbench  Benchmark to arrange (default: all)
+  --bench all|videomme|mlvu|lvbench|mvbench  Benchmark to arrange (all = original three)
   --data-root PATH                 Existing benchmark root (default: data/benchmarks)
   --python PATH                   Download environment's Python interpreter
   -h, --help                      Show this help
@@ -20,6 +20,8 @@ scripts/download_bench_data.py or scripts/stage_local_assets.py.
 Extracts Video-MME ZIPs, arranges annotations and the MLVU video map,
 and checks required video files. Preserves archives and existing inputs.
 Does not build questions.jsonl; see explanation_here/09-三个Benchmark数据下载.md.
+For MVBench this prepares 19 public tasks and requires ffmpeg; see
+explanation_here/15-MVBench公开任务完整评测.md.
 EOF
 }
 
@@ -44,7 +46,7 @@ done
 
 case "$bench" in
   all) benches=(videomme mlvu lvbench) ;;
-  videomme|mlvu|lvbench) benches=("$bench") ;;
+  videomme|mlvu|lvbench|mvbench) benches=("$bench") ;;
   *) echo "ERROR: Unsupported benchmark: $bench" >&2; exit 2 ;;
 esac
 
@@ -76,4 +78,4 @@ for current in "${benches[@]}"; do
   "$bench_python" "$ROOT/scripts/download_bench_data.py" \
     --bench "$current" --data-root "$data_root" --prepare-local
 done
-echo "Benchmark files ready. Build and validate manifests as described in explanation_here/09-三个Benchmark数据下载.md."
+echo "Benchmark files ready. Build and validate manifests using explanation_here/09-三个Benchmark数据下载.md or 15-MVBench公开任务完整评测.md."
