@@ -71,6 +71,7 @@ def snapshot(bench, base, annotations_only, revision, workers, mvbench_tasks=Non
         elif bench == "mvbench":
             patterns += [f"video/{archive}" for archive in dict.fromkeys(
                 TASK_ARCHIVES[task] for task in selected_tasks(mvbench_tasks) if TASK_ARCHIVES[task])]
+            patterns += ["video/data0613.zip"]
     print(f"Downloading {repo}@{revision} -> {base / 'download'}", flush=True)
     snapshot_download(repo_id=repo, repo_type="dataset", revision=revision,
                       local_dir=base / "download", allow_patterns=patterns, max_workers=workers)
@@ -157,7 +158,7 @@ def mlvu(base, download, annotations_only):
         write_json(base / "video-map.json", mapping)
 
 
-def unpack_mvbench(archive_path, videos, expected, *, frame_dirs=False):
+def _unpack_mvbench_archive(archive_path, videos, expected, *, frame_dirs=False, member_root=None):
     """Extract annotated media, retaining nested names and skipping prior files."""
     videos.mkdir(parents=True, exist_ok=True)
     expected = {video_relative_path(value, frames=frame_dirs).parts: value for value in expected}
@@ -169,6 +170,8 @@ def unpack_mvbench(archive_path, videos, expected, *, frame_dirs=False):
         for info in archive.infolist():
             member = PurePosixPath(info.filename)
             if info.is_dir() or member.is_absolute() or '..' in member.parts or chr(92) in info.filename:
+                continue
+            if member_root and member.parts[:len(member_root)] != member_root:
                 continue
             if frame_dirs:
                 if member.suffix.lower() != '.jpg':
@@ -198,8 +201,23 @@ def unpack_mvbench(archive_path, videos, expected, *, frame_dirs=False):
     missing = [value for parts, value in expected.items() if
                not (any(videos.joinpath(*parts).glob('*.jpg')) if frame_dirs
                     else videos.joinpath(*parts).is_file())]
+    return missing
+
+
+def unpack_mvbench(archive_path, videos, expected, *, frame_dirs=False, patch_archive=None):
+    """Resolve official update media before enforcing complete task coverage."""
+    expected = set(expected)
+    missing = _unpack_mvbench_archive(archive_path, videos, expected, frame_dirs=frame_dirs)
+    if missing and patch_archive is not None and patch_archive.is_file():
+        print(f'Supplementing {len(missing)} media for {archive_path.name} from {patch_archive.name}', flush=True)
+        # The update stores data0613/<original archive root>/<media subdir>/...
+        # Scope by source dataset so same-named videos cannot cross datasets.
+        missing = _unpack_mvbench_archive(patch_archive, videos, set(missing), frame_dirs=frame_dirs,
+                                         member_root=('data0613', archive_path.stem))
     if missing:
-        raise ValueError(f'Missing {len(missing)} MVBench media from {archive_path.name}; first: {missing[:10]}')
+        hint = ' Ensure video/data0613.zip is downloaded and supplied.' if patch_archive is not None else ''
+        raise ValueError(f'Missing {len(missing)} MVBench media from {archive_path.name}; '
+                         f'first: {sorted(missing)[:10]}.{hint}')
 
 
 def materialize_mvbench_clip(source, target, start, end, *, frames=False):
@@ -259,7 +277,8 @@ def mvbench(base, download, annotations_only, tasks):
         if not archive.is_file():
             raise FileNotFoundError(archive)
         print(f'Extracting {len(expected)} annotated media from {archive.name}', flush=True)
-        unpack_mvbench(archive, base / 'videos' / owner, expected, frame_dirs=frames)
+        unpack_mvbench(archive, base / 'videos' / owner, expected, frame_dirs=frames,
+                      patch_archive=download / 'video' / 'data0613.zip')
     if clips:
         print(f'Materializing {len(clips)} unique time-bound MVBench clips', flush=True)
         for index, (target, (source, start, end, frames)) in enumerate(clips.items(), 1):

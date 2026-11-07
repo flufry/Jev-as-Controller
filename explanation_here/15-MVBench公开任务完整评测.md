@@ -8,7 +8,7 @@
 
 ## 服务器下载与准备
 
-在已配置模型和 GPU 运行环境的容器内、仓库根目录执行。先确认 data 挂载到有足够空间的宿主机目录，且可运行 ffmpeg。公开 ZIP 合计约 17 GB；解压后的大小、派生裁剪视频和 HF 缓存还需要额外空间。perception.zip 占其中约 11.2 GB。下载支持复用已完成的文件和固定的 HF revision；十个 ZIP 只拉一次，共用的素材只解压一次。
+在已配置模型和 GPU 运行环境的容器内、仓库根目录执行。先确认 data 挂载到有足够空间的宿主机目录，且可运行 ffmpeg。公开 ZIP 合计约 17 GB；解压后的大小、派生裁剪视频和 HF 缓存还需要额外空间。perception.zip 占其中约 11.2 GB。下载支持复用已完成的文件和固定的 HF revision；十个素材 ZIP 加一个官方补充包 data0613.zip，共十一个 ZIP 只拉一次，共用的素材只解压一次。
 
 ```bash
 cd /workspace/Jev-as-Controller
@@ -30,6 +30,14 @@ python scripts/check_bench_inputs.py \
 ```
 
 预期 manifest 为 3,800 题、19 个 task_type；对应的 questions_public19.meta.json 中 coverage.official_full_benchmark 为 false。构建过程会校验每个任务 200 道官方题，逐个检查视频或裁剪文件存在并探测时长。已有同名 manifest 不会被覆盖；重建时换一个 --out 文件名。若只先拉标注，加 --annotations-only；再次去掉该参数会补视频。若 download/ 与 download_revision.json 已被上传，使用 --prepare-local 可离线整理。中断后重跑同一条下载命令，已解压、已裁剪的文件会跳过。不要在运行中清理 download/ ZIP 或 videos/。
+
+### star.zip 等归档提示缺视频（2026-11-07）
+
+旧脚本遗漏了官方更新包 [data0613.zip](https://huggingface.co/datasets/OpenGVLab/MVBench/blob/230a2d4fac8900333c61754641c7a13e069ac9c6/video/data0613.zip)，约 43.3 MB。VLMEvalKit 也会把其中 data0613/<素材来源>/<子目录>/ 的文件放回原数据目录。只解压 star.zip 等基础归档会漏掉后来新增的素材。
+
+同步最新 scripts/download_bench_data.py 后，重跑上面的下载命令（先不要加 --prepare-local）。它会复用已有下载、补拉 video/data0613.zip，并按原素材来源匹配缺失文件，再检查完整覆盖、裁剪时间边界。已完成的文件不会重新解压。若补包后仍缺视频，程序继续报错，不会跳过题目或将不完整覆盖标为 3,800 题。下载及解压过程仍需可写 HF 缓存和 data 挂载目录。
+
+补充文件已经手动放到 download/video/data0613.zip 时，可用 --prepare-local 离线继续。不需要重新下载 star.zip，也不需要手动扁平化目录或删除 JSON 中的题目。
 
 ### 官方单候选题兼容（2026-11-07）
 

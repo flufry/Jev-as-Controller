@@ -99,11 +99,46 @@ class MVBenchTests(unittest.TestCase):
             download.snapshot('mvbench', Path(directory), False, None, 2,
                               ['egocentric_navigation'])
             patterns = module.snapshot_download.call_args.kwargs['allow_patterns']
-            self.assertEqual(['json/egocentric_navigation.json', 'video/vlnqa.zip'], patterns)
+            self.assertEqual(['json/egocentric_navigation.json', 'video/vlnqa.zip', 'video/data0613.zip'], patterns)
             download.snapshot('mvbench', Path(directory), False, None, 2)
             patterns = module.snapshot_download.call_args.kwargs['allow_patterns']
             self.assertEqual(19, len([p for p in patterns if p.endswith('.json')]))
-            self.assertEqual(10, len([p for p in patterns if p.endswith('.zip')]))
+            self.assertEqual(11, len([p for p in patterns if p.endswith('.zip')]))
+
+    def test_update_archive_completes_missing_star_media_before_clipping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / 'download/json/action_sequence.json'
+            source.parent.mkdir(parents=True)
+            rows = [dict(row, start=0, end=3) for row in questions('ABHC6.mp4')]
+            source.write_text(json.dumps(rows), encoding='utf-8')
+            video = base / 'download/video'
+            video.mkdir()
+            with zipfile.ZipFile(video / 'star.zip', 'w') as output:
+                output.writestr('star/Charades_v1_480/other.mp4', b'other')
+            with zipfile.ZipFile(video / 'data0613.zip', 'w') as output:
+                output.writestr('data0613/clevrer/video_validation/ABHC6.mp4', b'wrong source')
+                output.writestr('data0613/star/Charades_v1_480/ABHC6.mp4', b'correct')
+            def fake_clip(source, target, start, end, *, frames=False):
+                self.assertEqual(b'correct', source.read_bytes())
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'clip')
+            with patch.object(download.shutil, 'which', return_value='ffmpeg'), \
+                    patch.object(download, 'materialize_mvbench_clip', side_effect=fake_clip):
+                download.mvbench(base, base / 'download', False, ['action_sequence'])
+                download.mvbench(base, base / 'download', False, ['action_sequence'])
+            self.assertTrue((base / 'videos' / materialized_video_path('action_sequence', rows[0])).is_file())
+
+    def test_update_cannot_fill_missing_media_from_another_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            with zipfile.ZipFile(base / 'star.zip', 'w'):
+                pass
+            with zipfile.ZipFile(base / 'data0613.zip', 'w') as output:
+                output.writestr('data0613/clevrer/video_validation/ABHC6.mp4', b'wrong source')
+            with self.assertRaisesRegex(ValueError, 'Missing 1 MVBench media'):
+                download.unpack_mvbench(base / 'star.zip', base / 'videos', {'ABHC6.mp4'},
+                                        patch_archive=base / 'data0613.zip')
 
     def test_shared_archive_and_bounded_clips(self):
         with tempfile.TemporaryDirectory() as directory:
