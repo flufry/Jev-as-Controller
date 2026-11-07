@@ -59,7 +59,7 @@ def extract_answer(response, options, truncated=False):
 
     if truncated:
         return result(reason='truncated')
-    if not isinstance(response, str) or not 2 <= len(options) <= 26:
+    if not isinstance(response, str) or not 1 <= len(options) <= 26:
         return result(reason='invalid_response')
     text = response.strip()
     if text.count('<think>') != text.count('</think>'):

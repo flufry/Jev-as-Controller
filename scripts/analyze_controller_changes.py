@@ -35,7 +35,8 @@ def read_manifest(path):
         raise ValueError('清单须非空且题目 ID 不重复')
     for row in rows:
         options = row.get('options')
-        if (row.get('task') != 'choice' or not isinstance(options, list) or not 2 <= len(options) <= 8
+        minimum_options = 1 if row.get('benchmark') == 'mvbench' else 2
+        if (row.get('task') != 'choice' or not isinstance(options, list) or not minimum_options <= len(options) <= 8
                 or not all(isinstance(v, str) and v.strip() for v in options)
                 or not isinstance(row.get('query'), str)
                 or type(row.get('answer_index')) is not int

@@ -34,6 +34,12 @@ class MVBenchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             selected_tasks(['action_antonym', 'action_antonym'])
         validate_reference('egocentric_navigation', questions())
+        singleton = questions()
+        singleton[81]['candidates'] = ['forward']
+        validate_reference('counterfactual_inference', singleton)
+        singleton[81]['candidates'] = []
+        with self.assertRaisesRegex(ValueError, 'answer/options'):
+            validate_reference('counterfactual_inference', singleton)
         invalid = questions()
         invalid[0]['answer'] = 'unknown'
         with self.assertRaisesRegex(ValueError, 'answer/options'):
@@ -52,7 +58,9 @@ class MVBenchTests(unittest.TestCase):
             base = Path(directory) / 'mvbench'
             raw_json = base / 'download/json/egocentric_navigation.json'
             raw_json.parent.mkdir(parents=True)
-            raw_json.write_text(json.dumps(questions()), encoding='utf-8')
+            reference = questions()
+            reference[81]['candidates'] = ['forward']
+            raw_json.write_text(json.dumps(reference), encoding='utf-8')
             archive = base / 'download/video/vlnqa.zip'
             archive.parent.mkdir(parents=True)
             with zipfile.ZipFile(archive, 'w') as output:
@@ -71,6 +79,10 @@ class MVBenchTests(unittest.TestCase):
             self.assertEqual(1, len({row['video_key'] for row in rows}))
             self.assertEqual('B. forward', rows[0]['options'][1])
             self.assertEqual(1, rows[0]['answer_index'])
+            self.assertEqual(['A. forward'], rows[81]['options'])
+            self.assertEqual(0, rows[81]['answer_index'])
+            from scripts.analyze_controller_changes import read_manifest
+            self.assertEqual(200, len(read_manifest(base / 'questions.jsonl')))
             subset = sample('mvbench', base / 'sample.jsonl', manifest=base / 'questions.jsonl',
                             seed=42, n=20)
             self.assertEqual(20, subset['n'])

@@ -17,7 +17,10 @@ def population(tmp_path):
         row=dict(video='clip' if spec[2]=='frames' else 'clip.mp4',question='What happens?',
             candidates=['one','two','three'],answer='two')
         if spec[3]:row.update(start=1.,end=3.)
-        (annotations/f'{task}.json').write_bytes(json_bytes([dict(row) for _ in range(200)]))
+        reference = [dict(row) for _ in range(200)]
+        if task == 'counterfactual_inference':
+            reference[81] = dict(row, candidates=['two'])
+        (annotations/f'{task}.json').write_bytes(json_bytes(reference))
         p=videos/materialized_video_path(task,row);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'fixture')
     reference,_=mvbench_reference(annotations)
     rows=adapt('mvbench',reference,videos)
@@ -109,10 +112,12 @@ def test_six_method_full_summary_mvbench(prepared,tmp_path,monkeypatch):
         protocol=dict(name='video_bench_full_rgb_v1',fps=fps,max_frames=4096 if fps==4 else 2048,context=262144,visual_token_budget=24576)
         values={}
         for row in rows:
-            p=dict(row,preprocessing={'fps':fps},probabilities=softmax([0.,1.,.5]),answer_index=1)
+            logits = [0.,1.,.5][:len(row['options'])]
+            p=dict(row,preprocessing={'fps':fps},probabilities=softmax(logits),
+                   answer_index=max(range(len(logits)), key=logits.__getitem__))
             if native:p.update(valid=True,truncated=False)
-            elif is_qwen:p['candidate_logits']=[0.,1.,.5]
-            else:p['logits']=[0.,1.,.5]
+            elif is_qwen:p['candidate_logits']=logits
+            else:p['logits']=logits
             values[row['id']]=p
         identity=dict(protocol=protocol,media={'fixture':True},checkpoint={'model':'qwen' if is_qwen else 'jev'},settings={})
         return values,dict(identity=identity,files={}),{}

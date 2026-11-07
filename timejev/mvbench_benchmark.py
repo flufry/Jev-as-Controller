@@ -80,7 +80,9 @@ def validate_reference(task, rows, *, expected_count=OFFICIAL_QUESTIONS_PER_TASK
         video_relative_path(row.get('video'), frames=media_type == 'frames')
         options = row.get('candidates')
         if (not isinstance(row.get('question'), str) or not row['question'].strip()
-                or not isinstance(options, list) or not 2 <= len(options) <= 8
+                # The official counterfactual task includes single-candidate rows.
+                # Preserve those rows and labels rather than inventing distractors.
+                or not isinstance(options, list) or not 1 <= len(options) <= 8
                 or any(not isinstance(option, str) or not option.strip() for option in options)
                 or len(set(options)) != len(options) or options.count(row.get('answer')) != 1):
             raise ValueError(f'Invalid MVBench {task} answer/options at question {index}')

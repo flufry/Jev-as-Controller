@@ -16,6 +16,21 @@ from timejev.lvb_native_generation import (
 OPTIONS = ['A. red shirt', 'B. blue shirt', 'C. green shirt']
 
 
+def test_single_candidate_still_requires_a_valid_generated_answer():
+    options = ['A. The cube collides with the gray cylinder']
+    for response in ['A', options[0], 'The cube collides with the gray cylinder']:
+        assert extract_answer(response, options)['answer_index'] == 0
+    for response in ['', 'B', 'I cannot answer']:
+        assert extract_answer(response, options)['valid'] is False
+    assert extract_answer('A', options, truncated=True)['valid'] is False
+    assert extract_answer('A', [])['valid'] is False
+    from videojev_hf.processing_videojev import suffix
+    text = suffix(dict(task='choice', query='Without the purple object, which event will happen?',
+                       options=options), [])
+    assert text.count('<|option_end|>') == 1
+    assert options[0] in text
+
+
 @pytest.mark.parametrize('response', ['B', ' B\n', '(B)', 'Answer: B',
     'The correct answer is B.', 'B. blue shirt', '{"answer": "B"}',
     'The clip shows a person in blue.\nAnswer: B'])

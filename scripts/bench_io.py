@@ -51,7 +51,8 @@ def load_rows(path, *, verify_meta=True):
             if not isinstance(row.get(key), str) or not row[key].strip():
                 raise ValueError(f'Expected nonempty {key}')
         options = row.get('options')
-        if (row.get('task') != 'choice' or not isinstance(options, list) or not 2 <= len(options) <= 8
+        minimum_options = 1 if row.get('benchmark') == 'mvbench' else 2
+        if (row.get('task') != 'choice' or not isinstance(options, list) or not minimum_options <= len(options) <= 8
                 or any(not isinstance(s, str) or not s.strip() or '<|' in s for s in [row['query'], *options])
                 or type(row.get('answer_index')) is not int or not 0 <= row['answer_index'] < len(options)):
             raise ValueError(f'Invalid choice question: {row["id"]}')

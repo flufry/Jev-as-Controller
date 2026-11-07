@@ -20,8 +20,8 @@ def suffix(row, stamps):
     for text in [row['query'], *row.get('options', [])]:
         if not isinstance(text, str) or not text.strip() or '<|' in text:
             raise ValueError('Questions/options must be nonempty text without control tokens')
-    if task == 'choice' and len(row.get('options', [])) < 2:
-        raise ValueError('Choice questions need at least two options')
+    if task == 'choice' and len(row.get('options', [])) < 1:
+        raise ValueError('Choice questions need at least one option')
     instruction = 'temporal grounding' if task == 'grounding' else 'single-choice video question answering'
     text = f'\nTask: {instruction}\nQuestion: {row["query"]}\nOptions:\n'
     candidates = stamps if task == 'grounding' else row['options']
