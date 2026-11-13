@@ -171,6 +171,15 @@ def test_raw_formatter_does_not_read_probabilities_or_keep_padding():
     assert value == dict(id='q', task='choice', answer_index=1, answer='B', logits=[-1000., 0.])
 
 
+def test_videojev_formatter_supports_one_candidate():
+    from videojev_hf.processing_videojev import format_predictions
+    output = SimpleNamespace(logits=torch.tensor([[-2.]]),
+                             score_mask=torch.tensor([[True]]))
+    value = format_predictions(output, [dict(id='q', task='choice', options=['A. only'])],
+                               {}, {}, logits_only=True)[0]
+    assert value == dict(id='q', task='choice', answer_index=0, answer='A. only', logits=[-2.])
+
+
 @pytest.mark.parametrize('bench', ['mlvu', 'lvbench'])
 def test_new_default_and_legacy_share_one_raw_run_and_support_full_diagnostics(tmp_path, bench):
     from scripts.eval_bench_controller import evaluate as unified, control as unified_control

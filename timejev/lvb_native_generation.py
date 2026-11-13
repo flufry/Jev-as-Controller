@@ -178,7 +178,7 @@ def read_generated(path, rows, complete=True, tokenizer=None):
 def score_generated(rows, by_id, *, benchmark=None):
     if not rows or len({row['id'] for row in rows}) != len(rows) or set(by_id) != {row['id'] for row in rows}:
         raise ValueError('计分需要非空互异题集及完整预测')
-    if benchmark is not None and (benchmark not in ('videomme', 'mlvu', 'lvbench')
+    if benchmark is not None and (benchmark not in ('videomme', 'mlvu', 'lvbench', 'mvbench')
             or any(row.get('benchmark') != benchmark for row in rows)):
         raise ValueError('benchmark必须与全部题目的数据集一致')
     totals, hits, invalid = Counter(), Counter(), 0

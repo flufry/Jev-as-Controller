@@ -31,6 +31,19 @@ def test_single_candidate_still_requires_a_valid_generated_answer():
     assert options[0] in text
 
 
+def test_single_candidate_native_score_accepts_mvbench():
+    row = dict(id='mvbench/counterfactual_inference/081', benchmark='mvbench',
+               task='choice', query='Which event?', options=['A. The cube collides with the gray cylinder'],
+               answer_index=0, video_key='mvbench/object_existence/video_10978.mp4',
+               stratum='counterfactual_inference', duration_group='counterfactual_inference')
+    prediction = dict(row, response='A', raw_response='A', generated_token_ids=[32],
+                      generated_tokens=1, truncated=False,
+                      parsed=dict(answer_index=0, valid=True, reason='ok'),
+                      answer_index=0, valid=True, invalid_reason=None, answer=row['options'][0])
+    metrics = score_generated([row], {row['id']: prediction}, benchmark='mvbench')
+    assert metrics['n'] == 1 and metrics['correct'] == 1 and metrics['accuracy'] == 1.
+
+
 @pytest.mark.parametrize('response', ['B', ' B\n', '(B)', 'Answer: B',
     'The correct answer is B.', 'B. blue shirt', '{"answer": "B"}',
     'The clip shows a person in blue.\nAnswer: B'])

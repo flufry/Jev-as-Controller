@@ -34,6 +34,16 @@ def test_bare_letters_and_candidate_order():
     assert candidate_scores(logits + 100, ids)[1] == pytest.approx(probabilities)
 
 
+def test_single_candidate_has_a_deterministic_unit_probability():
+    ids = candidate_token_ids(Tokenizer(), 1)
+    assert ids == [32]
+    logits = torch.full((500,), -10.)
+    logits[32] = 7.5
+    selected, probabilities = candidate_scores(logits, ids)
+    assert selected == [7.5]
+    assert probabilities == [1.0]
+
+
 @pytest.mark.parametrize('mode', ['multiple', 'space', 'duplicate'])
 def test_candidate_token_validation(mode):
     class Invalid(Tokenizer):

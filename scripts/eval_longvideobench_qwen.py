@@ -14,8 +14,8 @@ ANSWER_INSTRUCTION = 'Reply with only the letter of the correct option.'
 
 def candidate_token_ids(tokenizer, count):
     """只接受无空格、且可独立往返解码的单 token 候选字母。"""
-    if not 2 <= count <= 26:
-        raise ValueError('候选数量必须在 2 到 26 之间。')
+    if not 1 <= count <= 26:
+        raise ValueError('候选数量必须在 1 到 26 之间。')
     result = []
     for index in range(count):
         letter = chr(ord('A') + index)
