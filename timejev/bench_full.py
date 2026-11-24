@@ -56,6 +56,9 @@ def _official_rows(benchmark, reference, mvbench_scope=None):
     from scripts.build_bench_manifest import read_annotation, mlvu_reference, validate_lvbench
     from timejev.qa_manifest import parse_choice
     reference = Path(reference).resolve()
+    if benchmark == 'lvbench' and not reference.is_file():
+        raise FileNotFoundError(f'LVBench官方标注不存在：{reference}；下载器保存为 '
+            f'{reference.parent / "video_info.meta.jsonl"}，请用 --reference 指定该文件')
     if benchmark == 'mlvu':
         official, files = mlvu_reference(reference)
     elif benchmark == 'mvbench':
@@ -121,15 +124,65 @@ def _official_rows(benchmark, reference, mvbench_scope=None):
     return {r['id']:r for r in expected}, {str(p.resolve()):sha256(p) for p in files}
 
 
-def _payload(benchmark, source_manifest, reference, out, mvbench_scope=None):
+def _available_lvbench(source_manifest, source_sha, rows, official, reference_hashes):
+    """只接受逐视频完整排除的可用全集；不接受任意问题子集。"""
+    meta_path = source_manifest.with_suffix('.meta.json')
+    digest = sha256(meta_path)
+    source = read_json(meta_path)
+    coverage = source.get('coverage', {})
+    ids = {r['id'] for r in rows}
+    videos = {r['video_key'] for r in rows}
+    groups = {}
+    for row in official.values():
+        groups.setdefault(row['video_key'], set()).add(row['id'])
+    excluded, excluded_keys = [], []
+    for video in coverage.get('excluded_videos', []):
+        key, question_ids = video.get('video_key'), video.get('question_ids', [])
+        if key not in groups or set(question_ids) != groups[key] or len(question_ids) != len(groups[key]):
+            raise ValueError('LVBench缺失视频记录必须包含该视频的全部官方题目')
+        excluded.extend(question_ids)
+        excluded_keys.append(key)
+    if (source.get('schema') != 'bench_manifest_v1' or source.get('benchmark') != 'lvbench'
+            or source.get('manifest_sha256') != source_sha
+            or source.get('n') != len(rows) or source.get('videos') != len(videos)
+            or coverage.get('scope') != 'available_videos_subset'
+            or coverage.get('official_full_benchmark') is not False
+            or coverage.get('expected_questions') != len(official)
+            or coverage.get('expected_videos') != len(groups)
+            or coverage.get('available_questions') != len(rows)
+            or coverage.get('available_videos') != len(videos)
+            or coverage.get('excluded_questions') != len(excluded)
+            or coverage.get('question_coverage') != len(rows) / len(official)
+            or coverage.get('exclusion_policy') != 'exclude_all_questions_of_missing_or_empty_video'
+            or not rows or len(ids) != len(rows) or not ids <= set(official)
+            or len(set(excluded)) != len(excluded) or len(set(excluded_keys)) != len(excluded_keys)
+            or set(excluded) != set(official) - ids
+            or videos & set(excluded_keys) or videos | set(excluded_keys) != set(groups)):
+        raise ValueError('需要经审计的LVBench可用视频全集；请先build_bench_manifest --allow-missing-videos')
+    inputs = source.get('sources', {})
+    if not inputs or not set(reference_hashes.values()) <= set(inputs.values()):
+        raise ValueError('可用题集的官方标注SHA与 --reference 不一致')
+    files = {**inputs, str(meta_path):digest}
+    verify_files(files)
+    return dict(coverage, label=f'LVBench 全部可用视频（{len(rows)}/{len(official)}题）'), files
+
+
+def _payload(benchmark, source_manifest, reference, out, mvbench_scope=None,
+             allow_incomplete_population=False):
     source_manifest, reference, out = map(lambda p:Path(p).resolve(), (source_manifest, reference, out))
     before = sha256(source_manifest)
     official, reference_hashes = (_official_rows(benchmark, reference, mvbench_scope) if benchmark=='mvbench'
         else _official_rows(benchmark, reference))
     rows = read_jsonl(source_manifest)
-    if (len(rows) != expected_count(benchmark,mvbench_scope) or len({r['id'] for r in rows}) != len(rows)
+    coverage, extra_inputs = None, {}
+    if allow_incomplete_population:
+        if benchmark != 'lvbench':
+            raise ValueError('--allow-incomplete-population仅用于LVBench')
+        coverage, extra_inputs = _available_lvbench(source_manifest, before, rows, official, reference_hashes)
+    elif (len(rows) != expected_count(benchmark,mvbench_scope) or len({r['id'] for r in rows}) != len(rows)
             or {r['id'] for r in rows} != set(official)):
-        raise ValueError('必须是完整官方题集，拒绝子集、重复题或未知 ID')
+        raise ValueError('必须是完整官方题集，拒绝子集、重复题或未知 ID；'
+            'LVBench可用视频全集需显式 --allow-incomplete-population')
     result, media, owners = [], {}, {}
     for raw in rows:
         target = official[raw['id']]
@@ -164,7 +217,7 @@ def _payload(benchmark, source_manifest, reference, out, mvbench_scope=None):
             video_path=os.path.relpath(path, out.parent),
             media_source=dict(kind='video', path=os.path.relpath(path, out.parent)))
         result.append(member)
-    files = {str(source_manifest):before, **reference_hashes}
+    files = {str(source_manifest):before, **reference_hashes, **extra_inputs}
     verify_files(files)
     data = jsonl_bytes(result)
     import hashlib
@@ -174,6 +227,8 @@ def _payload(benchmark, source_manifest, reference, out, mvbench_scope=None):
         strata=dict(Counter(r['stratum'] for r in result)), source_manifest=str(source_manifest),
         reference=str(reference), verified_inputs=files)
     if benchmark=='mvbench':metadata['coverage']=mvbench_coverage(mvbench_scope or 'public19')
+    if coverage is not None:
+        metadata.update(coverage=coverage, split='test_available_videos', sampling='all_available_questions_no_selection')
     return data, metadata
 
 
@@ -183,15 +238,19 @@ def verify_files(files):
             raise ValueError(f'文件 SHA 不匹配或文件已变化：{path}')
 
 
-def prepare(benchmark, source_manifest, reference, out, *, mvbench_scope=None):
+def prepare(benchmark, source_manifest, reference, out, *, mvbench_scope=None,
+            allow_incomplete_population=False):
     if benchmark not in BENCHMARKS:
         raise ValueError('未知 benchmark')
     if benchmark!='mvbench' and mvbench_scope is not None:
         raise ValueError('--mvbench-scope仅用于MVBench')
+    if allow_incomplete_population and benchmark != 'lvbench':
+        raise ValueError('--allow-incomplete-population仅用于LVBench')
     out = Path(out).resolve()
     if out.exists() or out.with_suffix('.meta.json').exists():
         raise FileExistsError('拒绝覆盖已有全量清单')
-    data, meta = _payload(benchmark, source_manifest, reference, out, mvbench_scope)
+    data, meta = _payload(benchmark, source_manifest, reference, out, mvbench_scope,
+        allow_incomplete_population)
     write_new(out, data)
     write_new(out.with_suffix('.meta.json'), json_bytes(meta))
     return meta
@@ -201,13 +260,16 @@ def read_full(manifest):
     manifest = Path(manifest).resolve()
     meta = read_json(manifest.with_suffix('.meta.json'))
     bench = meta.get('benchmark')
+    available = bench == 'lvbench' and meta.get('coverage', {}).get('scope') == 'available_videos_subset'
+    count = meta.get('coverage', {}).get('available_questions') if available else (
+        expected_count(bench, meta.get('coverage', {}).get('scope')) if bench in BENCHMARKS else None)
     if (meta.get('schema') != SCHEMA or bench not in BENCHMARKS
             or meta.get('selection_seed', 'missing') is not None
-            or meta.get('n') != expected_count(bench,meta.get('coverage',{}).get('scope'))):
+            or type(meta.get('n')) is not int or meta['n'] <= 0 or meta['n'] != count):
         raise ValueError('需要已核验的全量固定题集，不能使用抽样清单')
     verify_files(meta['verified_inputs'])
     data, expected = _payload(bench, meta['source_manifest'], meta['reference'], manifest,
-        meta.get('coverage',{}).get('scope') if bench=='mvbench' else None)
+        meta.get('coverage',{}).get('scope') if bench=='mvbench' else None, available)
     if meta != expected or manifest.read_bytes() != data:
         raise ValueError('全量清单、顺序或元数据与官方来源不一致')
     rows = read_jsonl(manifest)
@@ -217,7 +279,7 @@ def read_full(manifest):
     return rows, dict(meta, path=str(manifest), meta_sha256=sha256(manifest.with_suffix('.meta.json')))
 
 
-def score_answers(rows, predictions, benchmark):
+def score_answers(rows, predictions, benchmark, coverage=None):
     """允许采样答案不等于 argmax；native 无效/截断计错且保留分母。"""
     ids = {r['id'] for r in rows}
     if not rows or len(ids) != len(rows) or set(predictions) != ids or benchmark not in BENCHMARKS:
@@ -257,6 +319,10 @@ def score_answers(rows, predictions, benchmark):
         result['by_duration_group'] = groups
     if cats:
         result['by_question_type'] = {g:dict(n=cats[g], correct=cat_hits[g], accuracy=cat_hits[g]/cats[g]) for g in sorted(cats)}
+    if benchmark == 'lvbench' and coverage is not None:
+        if coverage.get('scope') != 'available_videos_subset' or coverage.get('available_questions') != len(rows):
+            raise ValueError('LVBench计分覆盖范围不一致')
+        result.update(split='test_available_videos', coverage=coverage)
     return result
 
 
@@ -303,11 +369,11 @@ def install_sources(rows, full):
     def score(targets, by_id):
         for row in targets:
             validate_prediction(row, by_id[row['id']])
-        return score_answers(targets, by_id, full['benchmark'])
+        return score_answers(targets, by_id, full['benchmark'], full.get('coverage'))
     def write(path, value):
         if Path(path).name == 'run.json':
             value = dict(value, schema='video_bench_full_source_run_v1', split=full['split'],
-                selection_seed=None, sampling='full_dataset_no_selection')
+                selection_seed=None, sampling=full['sampling'])
         saved['write_json'](path, value)
     class Experiment(saved['Experiment']):
         def __init__(self, args, method, settings):
@@ -424,7 +490,7 @@ def read_source(directory, rows, full, role, *, expected_seed=None):
         h,w = audit['processed_hw']; groups = (audit['frames']+1)//2
         if audit['grid_thw'] != [groups,h//16,w//16] or audit['tokens'] != groups*(h//32)*(w//32):
             raise ValueError('视觉 token/尺寸记录不一致')
-    actual = score_answers(rows, predictions, full['benchmark'])
+    actual = score_answers(rows, predictions, full['benchmark'], full.get('coverage'))
     _check_metrics(read_json(directory/'metrics.json'), actual)
     return predictions, dict(directory=str(directory), identity=identity, files={**archived_files, **{str(directory/f):sha256(directory/f)
         for f in ('run.json','metrics.json','predictions.jsonl')}}), actual
@@ -489,7 +555,7 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
             distributions['controller_'+fusion][key] = control(q,j,beta=2.,fusion=fusion)
         distributions['qwen_logits'][key] = dict(q, probabilities=candidate_probabilities(q))
         distributions['videojev'][key] = dict(baseline, probabilities=candidate_probabilities(baseline))
-    argmax = {method:score_answers(rows,dist,full['benchmark']) for method,dist in distributions.items()}
+    argmax = {method:score_answers(rows,dist,full['benchmark'],full.get('coverage')) for method,dist in distributions.items()}
     for seed in seeds:
         selected = {method:sample_predictions(rows, dist, seed, method) for method,dist in distributions.items()}
         selected['qwen_native'] = predictions[f'native_seed{seed}']
@@ -506,7 +572,7 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
                 qwen_answer_index=q['answer_index'], videojev_answer_index=j['answer_index'])
         selected['baseline_or'] = oracle
         for method, by_id in selected.items():
-            metrics = score_answers(rows,by_id,full['benchmark'])
+            metrics = score_answers(rows,by_id,full['benchmark'],full.get('coverage'))
             if method=='baseline_or':
                 metrics.pop('invalid')
                 metrics['overlap']=dict(overlap)
@@ -534,7 +600,7 @@ def summarize(manifest, base, out=None, *, seeds=SEEDS, source_base=None):
         rng="random.Random(f'{seed}:{method}'); 单步Qwen method=qwen36; VideoJev method=videojev; 两版Controller method=jev_as_controller; 固定原题序CDF采样",
         or_scope='same_seed_sampled_2fps_qwen_and_sampled_4fps_videojev',sources=sources,verified_sources=files,
         code_sha256=code_files(),note='固定全量题集；三份候选分数各计算一次，seed42/43/44只控制候选答案采样；native实际生成三遍。OR使用同seed的单步Qwen采样与4FPS VideoJev采样答案，非native OR。argmax另列诊断。')
-    if full['benchmark']=='mvbench':report['coverage']=full['coverage']
+    if 'coverage' in full:report['coverage']=full['coverage']
     if out is not None:
         out=Path(out);out.mkdir(parents=True)
         for method,dist in distributions.items():
@@ -567,6 +633,12 @@ def markdown(report):
     if report['benchmark']=='mvbench':
         lines+=['','覆盖范围：'+report['coverage']['label']+'；每任务200题，Accuracy等于任务准确率均值。',
             '素材沿用任务标注的时间边界及帧序列转视频；本项目提示词、2/4FPS采样与VideoChat2原评测协议不同。']
+    if report['benchmark']=='lvbench' and 'coverage' in report:
+        coverage = report['coverage']
+        lines += ['', f'题目覆盖率：{coverage["available_questions"]}/{coverage["expected_questions"]}'
+            f'（{coverage["question_coverage"]*100:.2f}%）；排除 {len(coverage["excluded_videos"])} 个缺失/空视频、'
+            f'{coverage["excluded_questions"]} 道题。所有方法使用同一可用题集，分母为 {report["n"]}，'
+            '不是官方1549题全量结果；缺失视频及题目ID保存在JSON coverage.excluded_videos。']
     lines += ['',report['note'],'',report['rng'],'',
         'native Qwen与VideoJev独立基线：4 FPS/4096帧；单步Qwen及融合双源：2 FPS/2048帧。单步生成指首步候选内采样，并非完整词表的自回归生成。两版Controller均β=2，候选采样temperature=1，无top-k/top-p。',
         '旧公式 softmax(z_Q + 2*p_J)；新公式 softmax(z_Q + 2*s_J)。OR对同seed的单步Qwen 2FPS采样答案与VideoJev 4FPS采样答案逐题取“至少一个正确”，与latest公开表定义一致；native不参与该OR。无效native答案在自身准确率中计错并保留分母。',

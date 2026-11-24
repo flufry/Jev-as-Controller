@@ -15,8 +15,11 @@ def main(argv=None):
     parser.add_argument('--out', required=True)
     parser.add_argument('--mvbench-scope',choices=('public19','full20'),
         help='MVBench默认public19=3800题；有完整20任务素材时选full20=4000题')
+    parser.add_argument('--allow-incomplete-population', action='store_true',
+        help='仅LVBench：使用经缺失视频审计的全部可用题目，并记录覆盖率；不是官方1549题全量')
     args = parser.parse_args(argv)
-    result = prepare(args.bench, args.source_manifest, args.reference, args.out, mvbench_scope=args.mvbench_scope)
+    result = prepare(args.bench, args.source_manifest, args.reference, args.out,
+        mvbench_scope=args.mvbench_scope, allow_incomplete_population=args.allow_incomplete_population)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 

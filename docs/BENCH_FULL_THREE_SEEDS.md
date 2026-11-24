@@ -80,7 +80,7 @@ runner继承当前环境变量，分别设置各阶段的`CUDA_VISIBLE_DEVICES`�
 - LongVideoBench：使用原README的数据准备步骤，官方文件可为`official.json`或`lvb_val.json`；新入口会补齐时长分组，不要求原清单已经包含stratum。
 - Video-MME：使用`build_bench_manifest.py --bench videomme`生成完整清单。
 - MLVU：使用`build_bench_manifest.py --bench mlvu`，下文默认标注在`data/benchmarks/mlvu/json/`，这是本仓库下载器复制的七任务标注目录。
-- LVBench：使用`build_bench_manifest.py --bench lvbench`，官方标注默认为`official.jsonl`。
+- LVBench：使用`build_bench_manifest.py --bench lvbench`，官方标注默认为下载器生成的`video_info.meta.jsonl`。缺失视频时，可显式评测全部可用题目，见下方说明；此时不是官方1549题全量结果。
 
 数据迁移到另一台机器后，先确保源清单中视频路径可解析到新的数据位置；不要直接复用旧实验的绝对路径或元数据冒充新运行。
 
@@ -136,7 +136,7 @@ MLVU全量七任务题数不相同，**M-Avg不等于总体accuracy**。主表�
 ```bash
 python scripts/prepare_bench_full.py --bench lvbench \
   --source-manifest data/benchmarks/lvbench/questions.jsonl \
-  --reference data/benchmarks/lvbench/official.jsonl \
+  --reference data/benchmarks/lvbench/video_info.meta.jsonl \
   --out runs/full/lvbench/questions.jsonl
 
 python scripts/run_bench_full.py --bench lvbench \
@@ -145,6 +145,24 @@ python scripts/run_bench_full.py --bench lvbench \
 python scripts/run_bench_full.py --bench lvbench \
   --base runs/full/lvbench "${COMMON[@]}"
 ```
+
+若缺失/下架视频已由`build_bench_manifest.py --allow-missing-videos`生成`questions.available.jsonl`及同名`.meta.json`，请改用以下准备命令。它使用全部可用题目，不抽样；可用题数、覆盖率、排除视频及题目ID会贯穿候选来源、native、Controller和最终报告，严格官方1549题检查仍是默认行为。已有清单无需重新下载或重新构建。
+
+```bash
+python scripts/prepare_bench_full.py --bench lvbench \
+  --source-manifest data/benchmarks/lvbench/questions.available.jsonl \
+  --reference data/benchmarks/lvbench/video_info.meta.jsonl \
+  --allow-incomplete-population \
+  --out runs/full/lvbench_available/questions.jsonl
+
+python scripts/run_bench_full.py --bench lvbench \
+  --base runs/full/lvbench_available "${COMMON[@]}" --dry-run
+
+python scripts/run_bench_full.py --bench lvbench \
+  --base runs/full/lvbench_available "${COMMON[@]}"
+```
+
+SCP更新及Docker内操作见[LVBench可用视频全量测试](../explanation_here/17-LVBench可用视频全量测试.md)。
 
 四个区块可以独立执行；相同GPU不应同时启动四份队列。`prepare`拒绝覆盖已有清单；清单准备成功后无需重复执行该步。`--dry-run`验证题集和计划、打印全部命令，不启动GPU、不创建模型输出；它不验证CUDA内核能运行，也不加载checkpoint。
 

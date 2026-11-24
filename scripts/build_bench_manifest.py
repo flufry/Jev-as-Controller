@@ -156,7 +156,9 @@ def build(bench, base, annotation=None, videos=None, out=None, video_map=None, p
     if allow_missing_videos and bench != 'lvbench':
         raise ValueError('--allow-missing-videos is only supported for LVBench')
     base = Path(base).resolve()
-    default_annotation = base / ('official.jsonl' if bench == 'lvbench' else 'json' if bench == 'mvbench' else 'official.json')
+    default_annotation = base / ('video_info.meta.jsonl' if bench == 'lvbench' else 'json' if bench == 'mvbench' else 'official.json')
+    if bench == 'lvbench' and not default_annotation.is_file() and (base / 'official.jsonl').is_file():
+        default_annotation = base / 'official.jsonl'  # 兼容历史手动命名。
     annotation = Path(annotation or default_annotation).resolve()
     out = Path(out or base / 'questions.jsonl').resolve()
     meta_path = out.with_suffix('.meta.json')

@@ -293,7 +293,7 @@ class NativeExperiment:
                     sampling='manifest_defined', training_overlap_verified=False)
             if full_dataset is not None:
                 self.metadata.update(schema='video_bench_full_native_run_v1', split=full_dataset['split'],
-                    sampling='full_dataset_no_selection', selection_seed=None)
+                    sampling=full_dataset['sampling'], selection_seed=None)
             write_json(meta_path, self.metadata)
             for path in code:
                 destination = self.out/'source'/path.relative_to(ROOT)
@@ -334,7 +334,7 @@ class NativeExperiment:
         predictions = read_generated(self.predictions_path, self.rows, tokenizer=self.tokenizer)
         if self.full_dataset is not None:
             from .bench_full import score_answers
-            metrics = score_answers(self.rows, predictions, self.benchmark)
+            metrics = score_answers(self.rows, predictions, self.benchmark, self.full_dataset.get('coverage'))
         else:
             metrics = score_generated(self.rows, predictions, benchmark=self.benchmark)
         metrics.update(method=self.metadata['identity']['method'], protocol=self.metadata['identity']['protocol'],
